@@ -46,7 +46,7 @@ if __name__ == '__main__':
     twocoladd_path = fr'{data_path_battery}\{task}\data\{ID}\twocol-{ID}.csv'
     task = 'scales'
     scales_path = fr'{data_path_battery}\{task}\data\{ID}\physioscales-{ID}.csv'
-
+#gdf
     Log_df=openfile(ID,dataframe_path_log)
     corsi_df=Utilities.load_dataframe(corsi_path)
     pasat_df=Utilities.load_dataframe(pasat_path)
