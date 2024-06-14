@@ -4,38 +4,55 @@ import io
 
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
-    def concatDf(df_filtered, Log_df):
+    def concatDf(type,df_filtered, Log_df):
         for idx, row in corsi_filtered.iterrows():
             # Find the insertion point
-            insert_idx = Log_df[Log_df['Time'] > row['Time']].index.min()
+            insert_idx = Log_df[Log_df['Timestamp'] > row['Timestamp']].index.min()
 
             # If no row found with higher time, append at the end
             if pd.isna(insert_idx):
                 insert_idx = len(Log_df)
 
             # Create a new row to insert
-            if df_filtered=='scales_df':
-                new_row = {
-                    'ID': row['ID'],
-                    'Timestamp': row['Timestamp'],
-                    'Task': row['Scale'],
-                    'Status': 'Value',
-                    'Time': row['Time']
-                }
-            if df_filtered=='corsi_df':
+            if type=='scales':
                 new_row = {
                     'ID': row['subnum'],
                     'Timestamp': row['Timestamp'],
-                    'Task': row['type'],
-                    'Status': 'INSERTED',
-                    'Time': row['Time']
+                    'Time': row['Time'],
+                    'Task': row['corsi'],
+                    'Status': 'mistake'
+
+                }
+            elif type=='corsi':
+                new_row = {
+                    'ID': row['subnum'],
+                    'Timestamp': row['Timestamp'],
+                    'Time': row['time'],
+                    'Task': 'corsi',
+                    'Status': 'mistake'
+                }
+            elif type=='pasat':
+                new_row = {
+                    'ID': row['subnum'],
+                    'Timestamp': row['Timestamp'],
+                    'Time': row['Time'],
+                    'Task': row['corsi'],
+                    'Status': 'mistake'
+                }
+            elif type=='twocoladd':
+                new_row = {
+                    'ID': row['subnum'],
+                    'Timestamp': row['Timestamp'],
+                    'Time': row['Time'],
+                    'Task': row['corsi'],
+                    'Status': 'mistake'
                 }
 
             # Insert the new row into Log_df
             Log_df = pd.concat(
                 [Log_df.iloc[:insert_idx], pd.DataFrame([new_row]), Log_df.iloc[insert_idx:]]).reset_index(
                 drop=True)
-
+        return Log_df
     def openfile(ID,dataframe_path_log):
         with open(dataframe_path_log, 'r') as logfile:
             # Initialize an empty list to hold rows of data
@@ -47,25 +64,27 @@ if __name__ == '__main__':
                 parts = line.strip().split(',')
 
                 # Check if the line has the expected number of fields (4 fields)
-                if len(parts) == 4:
+                if len(parts) == 5:
                     rows.append(parts)
                 else:
                     print(f"Ignoring line with unexpected format: {line.strip()}")
 
         # Create a DataFrame from the list of rows
-        df = pd.DataFrame(rows, columns=['ID', 'Timestamp', 'Task', 'Status'])
+        df = pd.DataFrame(rows, columns=['ID', 'Timestamp', 'Time', 'Task', 'Status'])
 
         # Convert 'Timestamp' column to datetime format
         df['Timestamp'] = pd.to_datetime(df['Timestamp'])
-        df['Time'] = df['Timestamp'].dt.time
+
+        # Extract time component as a string
+        df['Timestamp'] = df['Timestamp'].dt.time.apply(lambda x: x.strftime('%H:%M:%S'))
 
 
         filtered_df = df[df['ID'] == ID]  # Ensure '142' is treated as a string if IDs are strings
-        Utilities.save_dataframe(filtered_df, dataframe_path, f'{ID}_DATA')
+        filtered_df = filtered_df.reset_index(drop=True)
         return filtered_df
 
 
-    ID='42'
+    ID='2'
     data_path = r'D:\PEBL2_Win_Portable_2.1.1_for test\PEBL2_Win_Portable_2.1.1_for test\PEBL2.1'
     dataframe_path = f'{data_path}\logs'
     dataframe_path_log = f'{dataframe_path}\TestLaunch-log.txt'
@@ -88,20 +107,19 @@ if __name__ == '__main__':
     twocoladd_df=Utilities.load_dataframe(twocoladd_path)
 
 
-    corsi_df['Timestamp'] = pd.to_datetime(corsi_df['Timestamp'])
-    corsi_df['Time'] = corsi_df['Timestamp'].dt.time
+    corsi_df['Timestamp'] = pd.to_datetime(corsi_df['Timestamp']).dt.time
     scales_df['Timestamp'] = pd.to_datetime(scales_df['Timestamp']).dt.time
 
     corsi_filtered = corsi_df[corsi_df['allcorr'] == 0]
 
     # Convert Log_df 'Time' column to datetime.time type
-    Log_df['Time'] = pd.to_datetime(Log_df['Timestamp']).dt.time
+    Log_df['Timestamp'] = pd.to_datetime(Log_df['Timestamp']).dt.time
 
     # Insert rows from corsi_filtered into Log_df
-    concatDf(corsi_filtered,Log_df)
-    concatDf(scales_df,Log_df)
-    concatDf(pasat_df,Log_df)
-    concatDf(twocoladd_df,Log_df)
+    Log_df=concatDf('corsi',corsi_filtered,Log_df)
+    concatDf('scales',scales_df,Log_df)
+    concatDf('pasat',pasat_df,Log_df)
+    concatDf('twocoladd',twocoladd_df,Log_df)
 
 
 # See PyCharm help at https://www.jetbrains.com/help/pycharm/
