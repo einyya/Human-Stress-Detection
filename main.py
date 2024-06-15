@@ -1,11 +1,12 @@
 from Utilities import Utilities
 import pandas as pd
-import io
+import os
+
 
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
     def concatDf(type,df_filtered, Log_df):
-        for idx, row in corsi_filtered.iterrows():
+        for idx, row in df_filtered.iterrows():
             # Find the insertion point
             insert_idx = Log_df[Log_df['Timestamp'] > row['Timestamp']].index.min()
 
@@ -18,9 +19,9 @@ if __name__ == '__main__':
                 new_row = {
                     'ID': row['subnum'],
                     'Timestamp': row['Timestamp'],
-                    'Time': row['Time'],
-                    'Task': row['corsi'],
-                    'Status': 'mistake'
+                    'Time': row['time'],
+                    'Task': 'Stress Report',
+                    'Status': row['value']
 
                 }
             elif type=='corsi':
@@ -35,16 +36,16 @@ if __name__ == '__main__':
                 new_row = {
                     'ID': row['subnum'],
                     'Timestamp': row['Timestamp'],
-                    'Time': row['Time'],
-                    'Task': row['corsi'],
+                    'Time': row['time'],
+                    'Task': 'pasat',
                     'Status': 'mistake'
                 }
             elif type=='twocoladd':
                 new_row = {
-                    'ID': row['subnum'],
+                    'ID': row['sub'],
                     'Timestamp': row['Timestamp'],
-                    'Time': row['Time'],
-                    'Task': row['corsi'],
+                    'Time': row['time'],
+                    'Task': 'twocoladd',
                     'Status': 'mistake'
                 }
 
@@ -84,7 +85,11 @@ if __name__ == '__main__':
         return filtered_df
 
 
-    ID='2'
+    ID='8'
+    Group='control_group'
+    # Group='music_group'
+    # Group='breath_group '
+
     data_path = r'D:\PEBL2_Win_Portable_2.1.1_for test\PEBL2_Win_Portable_2.1.1_for test\PEBL2.1'
     dataframe_path = f'{data_path}\logs'
     dataframe_path_log = f'{dataframe_path}\TestLaunch-log.txt'
@@ -100,26 +105,46 @@ if __name__ == '__main__':
 
     Log_df=openfile(ID,dataframe_path_log)
 
-    scales_df = pd.read_csv(scales_path, header=None)
-    scales_df.columns = ['ID', 'Timestamp', 'Value']
+    scales_df = pd.read_csv(scales_path, header=0)
     corsi_df=Utilities.load_dataframe(corsi_path)
     pasat_df=Utilities.load_dataframe(pasat_path)
-    twocoladd_df=Utilities.load_dataframe(twocoladd_path)
+    try:
+        twocoladd_df = pd.read_csv(twocoladd_path, delimiter=',', on_bad_lines='skip')
+        print("CSV file loaded successfully.")
+    except pd.errors.ParserError as e:
+        print(f"ParserError: {e}")
 
+    print(f"File path: {twocoladd_path}")
 
     corsi_df['Timestamp'] = pd.to_datetime(corsi_df['Timestamp']).dt.time
     scales_df['Timestamp'] = pd.to_datetime(scales_df['Timestamp']).dt.time
+    Log_df['Timestamp'] = pd.to_datetime(Log_df['Timestamp']).dt.time
+    pasat_df['Timestamp'] = pd.to_datetime(pasat_df['Timestamp']).dt.time
+    twocoladd_df['Timestamp'] = pd.to_datetime(twocoladd_df['Timestamp']).dt.time
+
 
     corsi_filtered = corsi_df[corsi_df['allcorr'] == 0]
+    pasat_filtered = pasat_df[pasat_df['correct'] == 0]
+    twocoladd_filtered = twocoladd_df[twocoladd_df['corr'] == 0]
 
     # Convert Log_df 'Time' column to datetime.time type
-    Log_df['Timestamp'] = pd.to_datetime(Log_df['Timestamp']).dt.time
 
     # Insert rows from corsi_filtered into Log_df
     Log_df=concatDf('corsi',corsi_filtered,Log_df)
-    concatDf('scales',scales_df,Log_df)
-    concatDf('pasat',pasat_df,Log_df)
-    concatDf('twocoladd',twocoladd_df,Log_df)
+    Log_df=concatDf('scales',scales_df,Log_df)
+    Log_df=concatDf('pasat',pasat_filtered,Log_df)
+    Log_df=concatDf('twocoladd',twocoladd_df,Log_df)
+    directory = fr'D:\Participants\{Group}\P_{ID}'
+    file_path = fr'{directory}\Triger_{ID}.csv'
+    os.makedirs(directory, exist_ok=True)
+    # Save the dataframe to the specified path
+    try:
+        Log_df.to_csv(file_path, index=False)
+        print(f"CSV file saved successfully at {file_path}.")
+    except Exception as e:
+        print(f"Error saving CSV file: {e}")
 
 
+
+    # Save the dataframe to the specified path
 # See PyCharm help at https://www.jetbrains.com/help/pycharm/
