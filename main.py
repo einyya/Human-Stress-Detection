@@ -41,6 +41,7 @@ if __name__ == '__main__':
     #________________________________________________________SortData_______________________________________________________
     if Analysis_DataSet:
         ad = AnalysisData(DataPath)
+        ad.Linear_Mixed_Effects_Models()
         ad.Analysis_per_particitenpt()
         # ad.Analysis_all_particitenpts()
 

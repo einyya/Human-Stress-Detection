@@ -8,11 +8,21 @@ import statsmodels.api as sm
 from statsmodels.formula.api import mixedlm
 from mpl_toolkits.mplot3d import Axes3D
 import numpy as np
+from statsmodels.regression.mixed_linear_model import MixedLM
+import pandas as pd
+import statsmodels.formula.api as smf
+
 
 # Press the green button in the gutter to run the script.
 class AnalysisData():
     def __init__(self,Directory):
         self.path = Directory
+        # self.sorted_DATA = sorted_DATA
+        # self.sampling_frequency = sampling_frequency
+        self.segment_DATA = pd.DataFrame()
+        self.preprocessed_DATA = pd.DataFrame()
+        self.window_samples = 0
+
     def Analysis_all_particitenpts(self):
         dataset_path = f'{self.path}\Participants\Dataset\Dataset.csv'
         dataset_file_path = f'{self.path}\Participants\Dataset'
@@ -67,6 +77,7 @@ class AnalysisData():
         print(model_full.summary())
 
     def Analysis_per_particitenpt(self):
+        dataset_path = f'{self.path}\Participants\Dataset\Dataset.csv'
         Participants_path = f'{self.path}\Participants\participation management.xlsx'
         Participants_df = pd.read_excel(Participants_path, header=1)
         Participants_df = Participants_df.dropna(axis=1, how='all')
@@ -83,17 +94,24 @@ class AnalysisData():
             data=pd.read_csv(dataParticipent_path)
             data=data.drop(columns=['participant'])
             data=data.drop(columns=['Part'])
+            data.replace('-', np.nan, inplace=True)
+            # Replace invalid entries like 'nane' with NaN
+            data.replace('nane', np.nan, inplace=True)
+            # Convert all columns to numeric where possible, forcing errors to NaN
+            data = data.apply(pd.to_numeric, errors='coerce')
 
+            # Now calculate the correlation matrix
+            correlation_matrix = data.corr()
 
             # sns.pairplot(data)
             # plt.suptitle("Scatter Plot Matrix of Features vs. Stress Report", y=1.02)
             # plt.show()
 
-            g = sns.pairplot(data, diag_kind="kde")
-            g.map_lower(sns.kdeplot, levels=4, color=".2")
-            g_path=fr'{directory}\pairplot_{ID}.png'
-            plt.savefig(g_path, dpi=300, bbox_inches='tight')
-            plt.show()
+            # g = sns.pairplot(data, diag_kind="kde")
+            # g.map_lower(sns.kdeplot, levels=4, color=".2")
+            # g_path=fr'{directory}\pairplot_{ID}.png'
+            # plt.savefig(g_path, dpi=300, bbox_inches='tight')
+            # plt.show()
 
             # Correlation matrix
             correlation_matrix = data.corr()
@@ -104,11 +122,11 @@ class AnalysisData():
             features_df = features_df[cols]
             # Concatenate with TotalCorr to accumulate results
             TotalCorr = pd.concat([TotalCorr, features_df], axis=0, ignore_index=True)
-            plt.figure(figsize=(10, 8))
-            sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', fmt='.2f')
-            plt.title('Correlation Matrix')
-            plt.savefig(fr'{directory}\Correlation Matrix_{ID}.png', dpi=300, bbox_inches='tight')
-            plt.show()
+            # plt.figure(figsize=(10, 8))
+            # sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', fmt='.2f')
+            # plt.title('Correlation Matrix')
+            # plt.savefig(fr'{directory}\Correlation Matrix_{ID}.png', dpi=300, bbox_inches='tight')
+            # plt.show()
 
             X = data[['ECG_Rate_Mean', 'HRV_MeanNN', 'HRV_SDNN', 'HRV_RMSSD', 'HRV_pNN50', 'HRV_pNN20']]
             y = data[['Stress Report']]
@@ -160,8 +178,8 @@ class AnalysisData():
             # # Save the DataFrame to a CSV file
             # summary_df.to_csv(fr'{directory}\Reggresion_summary_{ID}.png', index=False)
             # # Print out the results
-        dataset_path = f'{self.path}\Participants\Dataset\DatasetCorr.csv'
-        TotalCorr.to_csv(dataset_path)
+        datasetCorr_path = f'{self.path}\Participants\Dataset\DatasetCorr.csv'
+        TotalCorr.to_csv(datasetCorr_path)
 
         # Example of loading your dataset (replace with your data)
         # data = pd.read_csv('your_data.csv')
@@ -173,26 +191,44 @@ class AnalysisData():
         # Replace 'dependent_variable' with the column name of the outcome,
         # 'fixed_effects_variable' with your fixed effect predictor, and
         # 'random_effect_grouping' with the grouping factor for the random effect.
+        # Load your data
 
-        model = mixedlm("dependent_variable ~ fixed_effects_variable",
-                        data,
-                        groups=data["random_effect_grouping"],
-                        re_formula="~fixed_effects_variable")  # random effect with respect to the fixed variable
+    import pandas as pd
+    import statsmodels.api as sm
+    import numpy as np
+
+    def Linear_Mixed_Effects_Models(self):
+
+        # Load the dataset
+        data = pd.read_csv(r'D:\Human Bio Signals Analysis\Participants\Dataset\Dataset_1_EDA.csv')
+
+        # Perform mean imputation for all columns except 'participant' and 'Part'
+        data_imputed = data.copy()
+        numeric_columns = data_imputed.columns.difference(['participant', 'Part'])
+        data_imputed[numeric_columns] = data_imputed[numeric_columns].fillna(data_imputed[numeric_columns].mean())
+
+        # Fit the Linear Mixed-Effects Model (LMM)
+        # Using 'Stress_Report' as the dependent variable and 'participant' as the random effect
+        # The other physiological signals will be the fixed effects
+
+        model = smf.mixedlm(
+            "Stress_Report ~ ECG_Rate_Mean + HRV_MeanNN + HRV_SDNN + HRV_RMSSD + HRV_pNN50 + HRV_pNN20 + "
+            "HRV_VHF + HRV_VLF + HRV_LF + HRV_HF + HRV_LFHF + HRV_LFn + HRV_HFn + HRV_LnHF + HRV_TP + "
+            "HRV_ShanEn + Diaph_RSP_Rate_Mean + Diaph_BRV + Diaph_BRavNN + Diaph_RSP_Phase_Duration_Expiration + "
+            "Diaph_RSP_Phase_Duration_Inspiration + Diaph_RSP_Phase_Duration_Ratio + Diaph_RSP_RVT + "
+            "Diaph_RSP_Symmetry_PeakTrough + Diaph_RSP_Symmetry_RiseDecay + Chest_RSP_Rate_Mean + Chest_BRV + "
+            "Chest_BRavNN + Chest_RSP_Phase_Duration_Expiration + Chest_RSP_Phase_Duration_Inspiration + "
+            "Chest_RSP_Phase_Duration_Ratio + Chest_RSP_RVT + Chest_RSP_Symmetry_PeakTrough + Chest_RSP_Symmetry_RiseDecay + "
+            "EDA_Tonic_Mean + EDA_Phasic_Mean + SCR_Peaks_Count + SCR_Amplitude_Mean",
+            data_imputed,
+            groups=data_imputed["participant"])
 
         # Fit the model
         result = model.fit()
 
-        # Summary of the model
+        # Print the model summary
         print(result.summary())
 
-        # Extract random effects
-        random_effects = result.random_effects
 
-        # Print random effects for each grouping level
-        print("Random Effects by Group:")
-        for group, effect in random_effects.items():
-            print(f"Group {group}: {effect}")
 
-        # If you want to plot or further analyze the random effects
-        random_effects_df = pd.DataFrame(random_effects).T  # Transpose for easier viewing
-        print(random_effects_df)
+
