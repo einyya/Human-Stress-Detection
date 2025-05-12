@@ -5,7 +5,6 @@ from typing import List
 
 
 class Utilities():
-
     def __init__(self):
         pass
 

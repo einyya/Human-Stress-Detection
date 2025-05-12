@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 def concatDf(type, df_filtered, Log_df):
     for idx, row in df_filtered.iterrows():
         # Find the insertion point
@@ -164,3 +165,89 @@ try:
     print(f"CSV file saved successfully at {file_path}.")
 except Exception as e:
     print(f"Error saving CSV file: {e}")
+=======
+import pandas as pd
+
+def concatDf(type, df_filtered, Log_df):
+    for idx, row in df_filtered.iterrows():
+        # Find the insertion point
+        insert_idx = Log_df[Log_df['Timestamp'] > row['Timestamp']].index.min()
+
+        # If no row found with higher time, append at the end
+        if pd.isna(insert_idx):
+            insert_idx = len(Log_df)
+
+        # Create a new row to insert
+        if type == 'scales':
+            new_row = {
+                'ID': row['subnum'],
+                'Timestamp': row['Timestamp'],
+                'Time': row['time'],
+                'Task': 'Stress Report',
+                'Status': row['value']
+
+            }
+        elif type == 'corsi':
+            new_row = {
+                'ID': row['subnum'],
+                'Timestamp': row['Timestamp'],
+                'Time': row['time'],
+                'Task': 'corsi',
+                'Status': 'mistake'
+            }
+        elif type == 'pasat':
+            new_row = {
+                'ID': row['subnum'],
+                'Timestamp': row['Timestamp'],
+                'Time': row['time'],
+                'Task': 'pasat',
+                'Status': 'mistake'
+            }
+        elif type == 'twocoladd':
+            new_row = {
+                'ID': row['sub'],
+                'Timestamp': row['Timestamp'],
+                'Time': row['time'],
+                'Task': 'twocoladd',
+                'Status': 'mistake'
+            }
+
+        # Insert the new row into Log_df
+        Log_df = pd.concat(
+            [Log_df.iloc[:insert_idx], pd.DataFrame([new_row]), Log_df.iloc[insert_idx:]]).reset_index(
+            drop=True)
+    return Log_df
+
+
+def openfile(ID, dataframe_path_log):
+    with open(dataframe_path_log, 'r') as logfile:
+        # Initialize an empty list to hold rows of data
+        rows = []
+
+        # Read each line in the log file
+        for line in logfile:
+            # Split the line by commas
+            parts = line.strip().split(',')
+
+            # Check if the line has the expected number of fields (4 fields)
+            if len(parts) == 5:
+                rows.append(parts)
+            else:
+                print(f"Ignoring line with unexpected format: {line.strip()}")
+
+    # Create a DataFrame from the list of rows
+    df = pd.DataFrame(rows, columns=['ID', 'Timestamp', 'Time', 'Task', 'Status'])
+
+    # Convert 'Timestamp' column to datetime format
+    df['Timestamp'] = pd.to_datetime(df['Timestamp'])
+
+    # Extract time component as a string
+    df['Timestamp'] = df['Timestamp'].dt.time.apply(lambda x: x.strftime('%H:%M:%S'))
+
+    filtered_df = df[df['ID'] == ID]  # Ensure '142' is treated as a string if IDs are strings
+    filtered_df = filtered_df.reset_index(drop=True)
+    return filtered_df
+
+
+
+>>>>>>> ceb54f3 (HumanDataPebl)
