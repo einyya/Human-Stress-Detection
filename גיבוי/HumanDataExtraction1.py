@@ -12,6 +12,7 @@ import itertools
 import re
 from pathlib import Path
 import pandas as pd
+from xlsxwriter import Workbook
 
 
 # Press the green button in the gutter to run the script.
@@ -21,17 +22,15 @@ class HumanDataExtraction():
         self.path = Directory
         self.sorted_DATA = pd.DataFrame()
 
-    def Check_MedianFilter(self,ID,rangeID):
+    def Check_MedianFilter(self,ID,Group):
         Participants_path = f'{self.path}\\Participants\\participation management.csv'
         Participants_df = pd.read_csv(Participants_path, header=0)
         Participants_df = Participants_df.dropna(axis=1, how='all')
         Participants_df = Participants_df.dropna(subset=['participant', 'Date', 'departmant'], how='all')
         Participants_df['code'] = pd.to_numeric(Participants_df['code'], errors='coerce').astype('Int64')
+
         if ID is not None:
-            if rangeID:
-                Participants_df = Participants_df[Participants_df['code'] >= ID]
-            else:
-                Participants_df = Participants_df[Participants_df['code'] == ID]
+            Participants_df = Participants_df[Participants_df['code'] == ID]
         num_participants = len(Participants_df)
 
         medfilt_window = [3,5,11,101]
@@ -74,7 +73,6 @@ class HumanDataExtraction():
         for j, row in Participants_df.iterrows():
             ID = row['code']
             Group = row['Group']
-            print(ID)
             directory = fr'{self.path}\Participants\{Group}_group\P_{ID}'
             Trigger_path = fr'{directory}\Trigger_{ID}.csv'
             Trigger_df = pd.read_csv(Trigger_path, header=0)
@@ -1487,6 +1485,94 @@ class HumanDataExtraction():
             print(f"✅  Master workbook saved → {master_xlsx}")
         else:
             print("⚠️  No F-scores produced – check your input files.")
+    def build_summary_plots(
+            root: str | Path = r"C:\Users\e3bom\Desktop\Human Bio Signals Analysis\Analysis",
+            mgmt_csv: str | Path = r"C:\Users\e3bom\Desktop\Human Bio Signals Analysis\Participants\participation management.csv",
+            out_name: str = "Summary_Plots.xlsx",
+            img_scale: float = 0.4,
+            recursive: bool = False,
+    ):
+        """
+        Create an Excel workbook with one sheet per experimental group
+        ('breath', 'music', 'natural').  Each row shows a participant ID and
+        three embedded images:  Stress‑vs‑HRV plot, Fatigue‑vs‑HRV plot, RR plot.
+
+        Parameters
+        ----------
+        root : str | Path
+            Top‑level ‘Analysis’ directory that contains the three plot trees.
+        mgmt_csv : str | Path
+            Path to 'participation management.csv' (must have columns 'code', 'Group').
+        out_name : str
+            Output workbook name (placed inside `root`).
+        img_scale : float
+            Scaling factor for thumbnails (0.4 → 40 % of original size).
+        recursive : bool
+            If True, search sub‑folders recursively for *.png.
+        """
+        root = Path(root)
+        folders = {
+            "stress": root / r"RR\Plot\cor\Stress",
+            "fatigue": root / r"RR\Plot\cor\Fatigue",
+            "rr": root / r"RR\Plot\RR",
+        }
+        out_xlsx = root / out_name
+        mgmt_csv = Path(mgmt_csv)
+
+        # ── collect PNG paths ──────────────────────────────────────────
+        pattern = re.compile(r"P_(\d+).*\.png$", re.I)
+        records = []
+        for ptype, folder in folders.items():
+            if not folder.exists():
+                print(f"[WARN] folder missing → {folder}")
+                continue
+            globber = folder.rglob if recursive else folder.glob
+            for png in globber("*.png"):
+                m = pattern.search(png.name)
+                if m:
+                    pid = int(m.group(1))
+                    records.append({"ID": pid, "ptype": ptype, "path": png})
+        df = pd.DataFrame(records)
+        if df.empty:
+            raise RuntimeError("No PNG files found in the specified folders.")
+
+        # ── load management sheet ─────────────────────────────────────
+        if not mgmt_csv.exists():
+            raise FileNotFoundError(f"Cannot find management file → {mgmt_csv}")
+
+        groups = pd.read_csv(mgmt_csv)
+        groups.columns = groups.columns.str.strip().str.lower()
+        if {"code", "group"} - set(groups.columns):
+            raise KeyError("Management CSV must contain columns 'code' and 'Group'")
+
+        groups = (groups
+                  .rename(columns={"code": "ID", "group": "Group"})
+                  .loc[:, ["ID", "Group"]])
+        groups["ID"] = pd.to_numeric(groups["ID"], errors="coerce").astype("Int64")
+        df = df.merge(groups, on="ID", how="left")
+
+        # ── write Excel ───────────────────────────────────────────────
+        wb = Workbook(str(out_xlsx))
+        cell_width = 28
+        for group, gdf in df.groupby("Group", sort=False):
+            ws = wb.add_worksheet(str(group))
+            ws.set_column(0, 0, 10)
+            ws.set_column(1, 3, cell_width)
+            ws.write_row(0, 0, ["ID", "Stress vs HRV", "Fatigue vs HRV", "RR"])
+
+            row = 1
+            for pid, pdf in gdf.groupby("ID"):
+                ws.write_number(row, 0, int(pid))
+                for ptype, col in zip(["stress", "fatigue", "rr"], [1, 2, 3]):
+                    try:
+                        path = pdf.loc[pdf["ptype"] == ptype, "path"].iloc[0]
+                    except IndexError:
+                        continue
+                    ws.insert_image(row, col, str(path),
+                                    {"x_scale": img_scale, "y_scale": img_scale})
+                row += 1
+        wb.close()
+        print(f"✅  Excel written → {out_xlsx}")
 
     # -------------------------------------------------------------------
     def RSP_Parts(self,ID,Group):

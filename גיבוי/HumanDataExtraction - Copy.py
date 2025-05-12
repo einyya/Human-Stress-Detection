@@ -27,6 +27,7 @@ class HumanDataExtraction():
         Participants_df = Participants_df.dropna(axis=1, how='all')
         Participants_df = Participants_df.dropna(subset=['participant', 'Date', 'departmant'], how='all')
         Participants_df['code'] = pd.to_numeric(Participants_df['code'], errors='coerce').astype('Int64')
+
         if ID is not None:
             if rangeID:
                 Participants_df = Participants_df[Participants_df['code'] >= ID]
