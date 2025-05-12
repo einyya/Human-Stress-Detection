@@ -47,7 +47,7 @@ if __name__ == '__main__':
             hde.HRV_Window_Feature(ID=None, Group=None)
             hde.HRV_Window_Feature_all()
             hde.HRV_Window_2Features(ID = 27, Group = 'breath')
-            hde.AX_plot_3_part_HRV()
+
 
     #________________________________________________________SortData_______________________________________________________
     if Analysis_DataSet:
