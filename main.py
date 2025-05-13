@@ -13,7 +13,7 @@ if __name__ == '__main__':
     #________________________________________________________Make Trigger Table_______________________________________________________
     if Make_Trigger:
         hdp = HumanDataPebl(DataPath)
-        hdp.Make_Trigger_Table(ID=None,rangeID=False)
+        hdp.Make_Trigger_Table(ID=42,rangeID=True)
     #________________________________________________________SortData_______________________________________________________
     if Make_DataSet:
 
@@ -29,8 +29,8 @@ if __name__ == '__main__':
             hde.Check_MedianFilter(ID=None,rangeID=False)
 
         if Dataset:
-            hde.CleanData(ID=26,rangeID=True)
-            hde.CreateDataset(ID=None,rangeID=False)
+            # hde.CleanData(ID=42,rangeID=True)
+            hde.CreateDataset(ID=42,rangeID=True)
 
         if Combine:
             hde.AX_plot_signals_VAS(ID=41,rangeID=True)

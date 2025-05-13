@@ -1282,7 +1282,7 @@ class HumanDataExtraction():
                     fig.savefig(plot_path1, dpi=300, bbox_inches="tight")
                     fig.savefig(plot_path2, dpi=300, bbox_inches="tight")
                     plt.close(fig)
-                    print(f"[INFO] subplot figure saved → {plot_path}")
+                    print(f"{ID}")
 
                 # ── write participant‑level correlation Excel sheet ------------------------------
                 corr_dir = os.path.join(base_dir, r"Features\HRV\Cor")

@@ -162,7 +162,8 @@ class HumanDataPebl():
             VAS_faID=VAS_fa[VAS_fa["Sub"]==ID]
             VAS_stID=VAS_st[VAS_st["Sub"]==ID]
             combined_ID = pd.concat([CS_ID, TC_ID, PA_ID,VAS_faID,VAS_stID,BR_ID], ignore_index=True)
-
+            if ID == 42:
+                VAS_faID.loc[VAS_faID['Score'] == 'z', 'Score'] = 2.14
             # -----------------------------------------------------BioPac-Start_time-----------------------------------------------------------------
             participant_path=fr'{self.path}\Participants\{Group}_group\P_{ID}'
             participant_acq=fr'{participant_path}\P_{ID}.acq'
