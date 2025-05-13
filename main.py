@@ -18,9 +18,9 @@ if __name__ == '__main__':
     if Make_DataSet:
 
         PreProcessing = False
-        Dataset=True
+        Dataset=False
         Combine = True
-        HRV = True
+        HRV = False
         RSP = False
         EDA = False
 
@@ -29,11 +29,11 @@ if __name__ == '__main__':
             hde.Check_MedianFilter(ID=None,rangeID=False)
 
         if Dataset:
-            hde.CleanData(ID=None,rangeID=False)
+            hde.CleanData(ID=26,rangeID=True)
             hde.CreateDataset(ID=None,rangeID=False)
 
         if Combine:
-            hde.AX_plot_signals_VAS(ID=None,rangeID=False)
+            hde.AX_plot_signals_VAS(ID=41,rangeID=True)
 
         if RSP:
             hde.RSP_Parts(ID=None, Group=None)
@@ -44,7 +44,7 @@ if __name__ == '__main__':
             hde.AX_plot_3in1_EDA(ID=[19, 20, 21])
             hde.AX_plot_3_part_EDA(ID=[19, 20, 21])
         if HRV:
-            hde.HRV_Window_Feature(ID=None, Group=None)
+            hde.HRV_Window_Feature(ID=None)
             hde.HRV_Window_Feature_all()
             hde.HRV_Window_2Features(ID = 27, Group = 'breath')
 
