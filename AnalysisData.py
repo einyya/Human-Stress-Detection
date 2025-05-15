@@ -272,11 +272,6 @@ class AnalysisData():
         print(f"🏆  Overall best summary saved to {master_xlsx}")
 
     def ML_models_all(self, n_repeats=9, plot=False):
-        import warnings
-        warnings.filterwarnings("ignore")
-        import numpy as np
-        import matplotlib.pyplot as plt
-
         window_sizes = [5, 10, 30, 60]
         overlaps = [0.0, 0.5]
 
@@ -286,178 +281,239 @@ class AnalysisData():
             'XGBoost': XGBClassifier(use_label_encoder=False, eval_metric='logloss', random_state=42)
         }
 
-        # Minimal grid for faster testing
-        # Regular grid for full tuning
         param_grids = {
-            'DecisionTree': {
-                'max_depth': [None, 10, 20],
-                'min_samples_split': [2, 5, 10]
-            },
-            'RandomForest': {
-                'n_estimators': [100, 200],
-                'max_depth': [None, 10, 20],
-                'min_samples_split': [2, 5]
-            },
-            'XGBoost': {
-                'n_estimators': [100, 200],
-                'max_depth': [3, 6],
-                'learning_rate': [0.01, 0.1]
-            }
+            'DecisionTree': {'max_depth': [None, 10, 20], 'min_samples_split': [2, 5, 10]},
+            'RandomForest': {'n_estimators': [100, 200], 'max_depth': [None, 10, 20], 'min_samples_split': [2, 5]},
+            'XGBoost': {'n_estimators': [100, 200], 'max_depth': [3, 6], 'learning_rate': [0.01, 0.1]}
         }
 
         participants_csv = os.path.join(self.path, 'Participants', 'participation management.csv')
         participants = pd.read_csv(participants_csv)
         all_ids = participants['code'].dropna().astype(int).unique()
 
-        results = []
-        importances = {name: [] for name in base_models}
-        best_ws = {name: {'window': None, 'overlap': None, 'f1': -np.inf} for name in base_models}
-        tuned_models = {}
-        best_params = {}
+        for signal in ['HRV', 'EDA', 'RSP_C', 'RSP_D', 'All']:
+            print(f"\n📊 Evaluating signal: {signal}")
+            results = []
+            importances = {name: [] for name in base_models}
+            best_ws = {name: {'window': None, 'overlap': None, 'f1': -np.inf} for name in base_models}
+            tuned_models = {}
+            best_params = {}
 
-        for repeat in range(n_repeats):
-            print("Repeat:", repeat + 1)
-            train_ids, test_ids = train_test_split(
-                all_ids, test_size=0.2, random_state=42 + repeat
-            )
+            for repeat in range(n_repeats):
+                print("Repeat:", repeat + 1)
+                train_ids, test_ids = train_test_split(
+                    all_ids, test_size=0.2, random_state=42 + repeat
+                )
 
-            run_full = (repeat == 0)
-            iter_to_run = [1, 2, 3, 4] if run_full else [1, 4]
+                run_full = (repeat == 0)
+                iter_to_run = [1, 2, 3, 4] if run_full else [1, 4]
 
-            if 2 in iter_to_run:
-                for ws in window_sizes:
-                    for ov in overlaps:
+                if 2 in iter_to_run:
+                    for ws in window_sizes:
+                        for ov in overlaps:
+                            file_path = fr'{self.path}\Participants\Dataset\Dataset_{signal}_window{ws}s_{int(ov * 100)}.csv' if signal != 'All' \
+                                else f"Dataset_window{ws}s_{int(ov * 100)}.csv"
+                            if not os.path.exists(file_path):
+                                continue
+
+                            df = pd.read_csv(file_path).dropna().reset_index(drop=True)
+                            df_train = df[df['ID'].isin(train_ids)]
+                            feature_cols = [c for c in df.columns if c not in ['Time', 'ID', 'Group', 'Class']]
+                            y = df_train['Class'].map({'test': 1, 'music': 0, 'breath': 0, 'natural': 0})
+                            groups = df_train['ID']
+
+                            gkf = GroupKFold(n_splits=5)
+                            for name, model in base_models.items():
+                                f1_scores = []
+                                for tr_idx, val_idx in gkf.split(df_train, y, groups):
+                                    X_tr = df_train.iloc[tr_idx][feature_cols]
+                                    y_tr = y.iloc[tr_idx]
+                                    X_val = df_train.iloc[val_idx][feature_cols]
+                                    y_val = y.iloc[val_idx]
+
+                                    model.fit(X_tr, y_tr)
+                                    y_pred = model.predict(X_val)
+                                    f1_scores.append(f1_score(y_val, y_pred, zero_division=0))
+
+                                mean_f1 = np.mean(f1_scores)
+                                if mean_f1 > best_ws[name]['f1']:
+                                    best_ws[name].update({'window': ws, 'overlap': ov, 'f1': mean_f1})
+
+                if 3 in iter_to_run:
+                    for name, base_model in base_models.items():
+                        ws = best_ws[name]['window']
+                        ov = best_ws[name]['overlap']
                         file_path = fr'{self.path}\Participants\Dataset\Dataset_window{ws}s_{int(ov * 100)}.csv'
-                        if not os.path.exists(file_path):
-                            continue
-
                         df = pd.read_csv(file_path).dropna().reset_index(drop=True)
                         df_train = df[df['ID'].isin(train_ids)]
                         feature_cols = [c for c in df.columns if c not in ['Time', 'ID', 'Group', 'Class']]
-                        y = df_train['Class'].map({'test': 1, 'music': 0, 'breath': 0, 'natural': 0})
+                        X_tr = df_train[feature_cols]
+                        y_tr = df_train['Class'].map({'test': 1, 'music': 0, 'breath': 0, 'natural': 0})
                         groups = df_train['ID']
 
                         gkf = GroupKFold(n_splits=5)
-                        for name, model in base_models.items():
-                            f1_scores = []
-                            for tr_idx, val_idx in gkf.split(df_train, y, groups):
-                                X_tr = df_train.iloc[tr_idx][feature_cols]
-                                y_tr = y.iloc[tr_idx]
-                                X_val = df_train.iloc[val_idx][feature_cols]
-                                y_val = y.iloc[val_idx]
+                        grid = GridSearchCV(
+                            base_model,
+                            param_grid=param_grids[name],
+                            cv=gkf,
+                            scoring='f1',
+                            n_jobs=1
+                        )
+                        grid.fit(X_tr, y_tr, groups=groups)
+                        tuned_models[name] = grid.best_estimator_
+                        best_params[name] = grid.best_params_
+                        print(f"Best params for {name}: {best_params[name]}")
 
-                                model.fit(X_tr, y_tr)
-                                y_pred = model.predict(X_val)
-                                f1_scores.append(f1_score(y_val, y_pred, zero_division=0))
-
-                            mean_f1 = np.mean(f1_scores)
-                            if mean_f1 > best_ws[name]['f1']:
-                                best_ws[name].update({'window': ws, 'overlap': ov, 'f1': mean_f1})
-
-            if 3 in iter_to_run:
-                for name, base_model in base_models.items():
+                for name in base_models:
                     ws = best_ws[name]['window']
                     ov = best_ws[name]['overlap']
+                    if ws is None or ov is None:
+                        continue
+
                     file_path = fr'{self.path}\Participants\Dataset\Dataset_window{ws}s_{int(ov * 100)}.csv'
                     df = pd.read_csv(file_path).dropna().reset_index(drop=True)
-                    df_train = df[df['ID'].isin(train_ids)]
+
+                    if run_full:
+                        model = tuned_models[name]
+                        params = best_params[name]
+                    else:
+                        df_train = df[df['ID'].isin(train_ids)]
+                        feature_cols = [c for c in df.columns if c not in ['Time', 'ID', 'Group', 'Class']]
+                        y = df_train['Class'].map({'test': 1, 'music': 0, 'breath': 0, 'natural': 0})
+                        model = base_models[name].set_params(**best_params[name])
+                        model.fit(df_train[feature_cols], y)
+                        params = best_params[name]
+
+                    df_test = df[df['ID'].isin(test_ids)]
                     feature_cols = [c for c in df.columns if c not in ['Time', 'ID', 'Group', 'Class']]
-                    X_tr = df_train[feature_cols]
-                    y_tr = df_train['Class'].map({'test': 1, 'music': 0, 'breath': 0, 'natural': 0})
-                    groups = df_train['ID']
+                    X_te = df_test[feature_cols]
+                    y_te = df_test['Class'].map({'test': 1, 'music': 0, 'breath': 0, 'natural': 0})
 
-                    gkf = GroupKFold(n_splits=5)
-                    grid = GridSearchCV(
-                        base_model,
-                        param_grid=param_grids[name],
-                        cv=gkf,
-                        scoring='f1',
-                        n_jobs=1
-                    )
-                    grid.fit(X_tr, y_tr, groups=groups)
-                    tuned_models[name] = grid.best_estimator_
-                    best_params[name] = grid.best_params_
-                    print(f"Best params for {name}: {best_params[name]}")
+                    y_pred = model.predict(X_te)
+                    result_row = {
+                        'Signal': signal,
+                        'Repeat': repeat + 1,
+                        'Model': name,
+                        'Window (s)': ws,
+                        'Overlap (%)': int(ov * 100),
+                        'Accuracy': accuracy_score(y_te, y_pred),
+                        'Precision': precision_score(y_te, y_pred, zero_division=0),
+                        'Recall': recall_score(y_te, y_pred, zero_division=0),
+                        'F1': f1_score(y_te, y_pred, zero_division=0)
+                    }
+                    result_row.update({f'param_{k}': v for k, v in params.items()})
+                    results.append(result_row)
 
-            for name in base_models:
-                ws = best_ws[name]['window']
-                ov = best_ws[name]['overlap']
-                if ws is None or ov is None:
-                    continue
+                    # Save feature importance plot, CSV, and collect for summary
+                    if hasattr(model, 'feature_importances_'):
+                        imp = pd.Series(model.feature_importances_, index=feature_cols).sort_values(ascending=False)
+                        importances[name].append(imp)
+                        out_dir = fr"{self.path}\Participants\Dataset\ML\{name}\Repeat{repeat + 1}"
+                        os.makedirs(out_dir, exist_ok=True)
+                        imp.to_csv(os.path.join(out_dir, "Feature_Importance.csv"))
+                        plt.figure(figsize=(10, 5))
+                        imp.plot.bar()
+                        plt.title(f"{name} Feature Importances - Repeat {repeat + 1}")
+                        plt.tight_layout()
+                        plt.savefig(os.path.join(out_dir, "Feature_Importance_Plot.png"))
+                        plt.close()
 
-                file_path = fr'{self.path}\Participants\Dataset\Dataset_window{ws}s_{int(ov * 100)}.csv'
-                df = pd.read_csv(file_path).dropna().reset_index(drop=True)
+            # Save per-signal results
+            results_df = pd.DataFrame(results)
+            out_dir = os.path.join(self.path, 'Participants', 'Dataset', 'ML')
+            os.makedirs(out_dir, exist_ok=True)
+            results_df.to_csv(os.path.join(out_dir, f'NestedCV_Results_{signal}.csv'), index=False)
+            print(f"✅ Saved results for {signal} to NestedCV_Results_{signal}.csv")
 
-                if run_full:
-                    model = tuned_models[name]
-                    params = best_params[name]
-                else:
-                    df_train = df[df['ID'].isin(train_ids)]
-                    feature_cols = [c for c in df.columns if c not in ['Time', 'ID', 'Group', 'Class']]
-                    y = df_train['Class'].map({'test': 1, 'music': 0, 'breath': 0, 'natural': 0})
-                    model = base_models[name].set_params(**best_params[name])
-                    model.fit(df_train[feature_cols], y)
-                    params = best_params[name]
+            # Aggregate stats per model
+            summary = results_df.groupby("Model")[['Accuracy', 'Precision', 'Recall', 'F1']].agg(['mean', 'std']).round(3)
+            summary.to_csv(fr'{self.path}\Participants\Dataset\ML\NestedCV_{signal}_Summary.csv')
+            print("Summary statistics saved.")
 
-                df_test = df[df['ID'].isin(test_ids)]
-                feature_cols = [c for c in df.columns if c not in ['Time', 'ID', 'Group', 'Class']]
-                X_te = df_test[feature_cols]
-                y_te = df_test['Class'].map({'test': 1, 'music': 0, 'breath': 0, 'natural': 0})
-
-                y_pred = model.predict(X_te)
-                result_row = {
-                    'Repeat': repeat + 1,
-                    'Model': name,
-                    'Window (s)': ws,
-                    'Overlap (%)': int(ov * 100),
-                    'Accuracy': accuracy_score(y_te, y_pred),
-                    'Precision': precision_score(y_te, y_pred, zero_division=0),
-                    'Recall': recall_score(y_te, y_pred, zero_division=0),
-                    'F1': f1_score(y_te, y_pred, zero_division=0)
-                }
-                result_row.update({f'param_{k}': v for k, v in params.items()})
-                results.append(result_row)
-
-                # Save feature importance plot, CSV, and collect for summary
-                if hasattr(model, 'feature_importances_'):
-                    imp = pd.Series(model.feature_importances_, index=feature_cols).sort_values(ascending=False)
-                    importances[name].append(imp)
-                    out_dir = fr"{self.path}\Participants\Dataset\ML\{name}\Repeat{repeat + 1}"
-                    os.makedirs(out_dir, exist_ok=True)
-                    imp.to_csv(os.path.join(out_dir, "Feature_Importance.csv"))
+            # Feature importance summary
+            for name, imps in importances.items():
+                if imps:
+                    imp_df = pd.concat(imps, axis=1).fillna(0)
+                    imp_df.columns = [f'Repeat_{i + 1}' for i in range(len(imps))]
+                    imp_df['Mean'] = imp_df.mean(axis=1)
+                    imp_df['Std'] = imp_df.std(axis=1)
+                    out_subdir = os.path.join(out_dir, signal, name)
+                    os.makedirs(out_subdir, exist_ok=True)
+                    imp_df.sort_values('Mean', ascending=False).to_csv(
+                        os.path.join(out_subdir, "Feature_Importance_Summary.csv"))
                     plt.figure(figsize=(10, 5))
-                    imp.plot.bar()
-                    plt.title(f"{name} Feature Importances - Repeat {repeat + 1}")
+                    imp_df['Mean'].sort_values(ascending=False).plot.bar(yerr=imp_df['Std'])
+                    plt.title(f"{name} - Mean Feature Importances over {n_repeats} Repeats ({signal})")
                     plt.tight_layout()
-                    plt.savefig(os.path.join(out_dir, "Feature_Importance_Plot.png"))
+                    plt.savefig(os.path.join(out_subdir, "Feature_Importance_Summary_Plot.png"))
                     plt.close()
 
-        results_df = pd.DataFrame(results)
-        out_path = fr'{self.path}\Participants\Dataset\ML\NestedCV_Results.csv'
-        results_df.to_csv(out_path, index=False)
-        print(f"Nested CV complete. Results saved to {out_path}")
+                # Feature importance summary
+            all_imps_long = []
+            combined_df = pd.DataFrame()
 
-        # Aggregate stats per model
-        summary = results_df.groupby("Model")[['Accuracy', 'Precision', 'Recall', 'F1']].agg(['mean', 'std']).round(3)
-        summary.to_csv(fr'{self.path}\Participants\Dataset\ML\NestedCV_Summary.csv')
-        print("Summary statistics saved.")
+            for name, imps in importances.items():
+                if imps:
+                    imp_df = pd.concat(imps, axis=1).fillna(0)
+                    imp_df.columns = [f'Repeat_{i + 1}' for i in range(len(imps))]
+                    imp_df['Mean'] = imp_df.mean(axis=1)
+                    imp_df['Std'] = imp_df.std(axis=1)
+                    out_subdir = os.path.join(out_dir, signal, name)
+                    os.makedirs(out_subdir, exist_ok=True)
+                    imp_df.sort_values('Mean', ascending=False).to_csv(
+                        os.path.join(out_subdir, "Feature_Importance_Summary.csv"))
+                    plt.figure(figsize=(10, 5))
+                    imp_df['Mean'].sort_values(ascending=False).plot.bar(yerr=imp_df['Std'])
+                    plt.title(f"{name} - Mean Feature Importances over {n_repeats} Repeats ({signal})")
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(out_subdir, "Feature_Importance_Summary_Plot.png"))
+                    plt.close()
 
-        # Feature importance summary
-        for name, imps in importances.items():
-            if imps:
-                imp_df = pd.concat(imps, axis=1).fillna(0)
-                imp_df.columns = [f'Repeat_{i + 1}' for i in range(len(imps))]
-                imp_df['Mean'] = imp_df.mean(axis=1)
-                imp_df['Std'] = imp_df.std(axis=1)
-                out_dir = fr"{self.path}\Participants\Dataset\ML\{name}"
-                imp_df.sort_values('Mean', ascending=False).to_csv(
-                    os.path.join(out_dir, "Feature_Importance_Summary.csv"))
-                plt.figure(figsize=(10, 5))
-                imp_df['Mean'].sort_values(ascending=False).plot.bar(yerr=imp_df['Std'])
-                plt.title(f"{name} - Mean Feature Importances over {n_repeats} Repeats")
+                    model_imp_df = pd.concat(imps, axis=1).fillna(0)
+                    model_imp_df.columns = [f'{name}_Repeat_{i + 1}' for i in range(len(imps))]
+                    model_imp_df[f'{name}_Mean'] = model_imp_df.mean(axis=1)
+                    combined_df = pd.concat([combined_df, model_imp_df[[f'{name}_Mean']]], axis=1)
+
+                    for i, imp in enumerate(imps):
+                        temp = imp.reset_index()
+                        temp.columns = ['Feature', 'Importance']
+                        temp['Model'] = name
+                        temp['Repeat'] = i + 1
+                        all_imps_long.append(temp)
+
+            if not combined_df.empty:
+                combined_df['Combined_Mean'] = combined_df.mean(axis=1)
+                combined_df = combined_df.sort_values('Combined_Mean', ascending=False)
+                comb_dir = os.path.join(out_dir, signal, 'Combined')
+                os.makedirs(comb_dir, exist_ok=True)
+                combined_df.to_csv(os.path.join(comb_dir, "Combined_Feature_Importance.csv"))
+                plt.figure(figsize=(12, 6))
+                combined_df['Combined_Mean'].plot(kind='bar')
+                plt.title(f"Combined Feature Importances Across All Models ({signal})")
+                plt.ylabel("Mean Importance")
                 plt.tight_layout()
-                plt.savefig(os.path.join(out_dir, "Feature_Importance_Summary_Plot.png"))
+                plt.savefig(os.path.join(comb_dir, "Combined_Feature_Importance_Plot.png"))
                 plt.close()
+
+            if all_imps_long:
+                all_df = pd.concat(all_imps_long, axis=0)
+                mean_df = all_df.groupby('Feature')['Importance'].mean().sort_values(ascending=False)
+                plt.figure(figsize=(12, 6))
+                mean_df.plot(kind='bar')
+                plt.title(f"Combined Mean Feature Importance Across All Models ({signal})")
+                plt.ylabel("Mean Importance")
+                plt.tight_layout()
+                plt.savefig(os.path.join(comb_dir, "Combined_Feature_Importance_MeanPlot.png"))
+                plt.close()
+
+                plt.figure(figsize=(14, 6))
+                sns.boxplot(data=all_df, x='Feature', y='Importance')
+                plt.xticks(rotation=90)
+                plt.title(f"Feature Importance Distribution (All Models & Repeats) ({signal})")
+                plt.tight_layout()
+                plt.savefig(os.path.join(comb_dir, "Combined_Feature_Importance_BoxPlot.png"))
+                plt.close()
+
     def Cor(self):
         # ── 1. load data ──────────────────────────────────────────────
         stress_all = pd.read_excel(r"C:\Users\e3bom\Desktop\Human Bio Signals Analysis\Participants\All_HRV_stress_30s.xlsx"

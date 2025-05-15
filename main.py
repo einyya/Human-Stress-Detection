@@ -18,7 +18,7 @@ if __name__ == '__main__':
     if Make_DataSet:
 
         PreProcessing = False
-        Dataset=False
+        Dataset=True
         Combine = True
         HRV = False
         RSP = False
@@ -27,13 +27,14 @@ if __name__ == '__main__':
         hde = HumanDataExtraction(DataPath)
         if PreProcessing:
             hde.Check_MedianFilter(ID=None,rangeID=False)
+            hde.Check_MinMaxVlaue(ID=None,rangeID=False)
 
         if Dataset:
             # hde.CleanData(ID=42,rangeID=True)
-            hde.CreateDataset(ID=42,rangeID=True)
+            hde.CreateDataset(ID=None,rangeID=True)
 
         if Combine:
-            hde.AX_plot_signals_VAS(ID=41,rangeID=True)
+            hde.AX_plot_signals_VAS(ID=52,rangeID=True,Signals_plot=True,Cor_plot=False)
 
         if RSP:
             hde.RSP_Parts(ID=None, Group=None)

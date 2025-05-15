@@ -8,9 +8,6 @@ from scipy.signal import medfilt
 import seaborn as sns
 import os
 from scipy.stats import linregress
-import itertools
-import re
-from pathlib import Path
 import pandas as pd
 
 
@@ -20,6 +17,74 @@ class HumanDataExtraction():
     def __init__(self,Directory):
         self.path = Directory
         self.sorted_DATA = pd.DataFrame()
+
+    def Check_MinMaxVlaue(self, ID, rangeID):
+        Participants_path = f'{self.path}\\Participants\\participation management.csv'
+        Participants_df = pd.read_csv(Participants_path, header=0)
+        Participants_df = Participants_df.dropna(axis=1, how='all')
+        Participants_df = Participants_df.dropna(subset=['participant', 'Date', 'departmant'], how='all')
+        Participants_df['code'] = pd.to_numeric(Participants_df['code'], errors='coerce').astype('Int64')
+
+        if ID is not None:
+            if rangeID:
+                Participants_df = Participants_df[Participants_df['code'] >= ID]
+            else:
+                Participants_df = Participants_df[Participants_df['code'] == ID]
+
+        eda_min = np.inf
+        eda_max = -np.inf
+        min_info = {}
+        max_info = {}
+
+        for _, row in Participants_df.iterrows():
+            ID=row['code']
+            group = row['group'] if 'group' in row else row['Group']  # Adjust if needed
+            eda_path = os.path.join(self.path, "Participants", group + '_group', f"P_{ID}", "EDA.csv")
+
+            if os.path.exists(eda_path):
+                try:
+                    eda_data = pd.read_csv(eda_path)
+
+                    if 'EDA' in eda_data.columns:
+                        eda_values = eda_data['EDA'].values
+                        current_min = np.nanmin(eda_values)
+                        current_max = np.nanmax(eda_values)
+                    else:
+                        print(f"'EDA' column not found in {eda_path}")
+                        continue
+
+                    if current_min < eda_min:
+                        eda_min = current_min
+                        min_info = {
+                            "value": eda_min,
+                            "participant": ID,
+                            "group": group,
+                            "file": eda_path
+                        }
+
+                    if current_max > eda_max:
+                        eda_max = current_max
+                        max_info = {
+                            "value": eda_max,
+                            "participant": ID,
+                            "group": group,
+                            "file": eda_path
+                        }
+
+                except Exception as e:
+                    print(f"Error reading {eda_path}: {e}")
+            else:
+                print(f"Missing EDA file for P_{ID} in group {group}_group")
+
+        print(f"\nGlobal EDA Min Value: {min_info.get('value', 'N/A')}")
+        print(
+            f"Found in: Group = {min_info.get('group', 'N/A')}_group, Participant = {min_info.get('participant', 'N/A')}")
+        print(f"File: {min_info.get('file', 'N/A')}")
+
+        print(f"\nGlobal EDA Max Value: {max_info.get('value', 'N/A')}")
+        print(
+            f"Found in: Group = {max_info.get('group', 'N/A')}_group, Participant = {max_info.get('participant', 'N/A')}")
+        print(f"File: {max_info.get('file', 'N/A')}")
 
     def Check_MedianFilter(self,ID,rangeID):
         Participants_path = f'{self.path}\\Participants\\participation management.csv'
@@ -934,9 +999,12 @@ class HumanDataExtraction():
     #         RSP_C = BioPac.named_channels['Chest Respiration'].data
     #         RSP_C_T = BioPac.named_channels['Chest Respiration'].time_index
     #         eda_data = EDA['EDA']
-    def AX_plot_signals_VAS(self, ID, rangeID):
+    def AX_plot_signals_VAS(self, ID, rangeID,Signals_plot,Cor_plot):
         VAS_plot=False
-        Cor_plot=True
+        EDA_plot=True
+        RR_plot=False
+        RSP_D_plot=False
+        RSP_C_plot=False
         Participants_path = f'{self.path}\\Participants\\participation management.csv'
         Participants_df = pd.read_csv(Participants_path, header=0)
         Participants_df = Participants_df.dropna(axis=1, how='all')
@@ -965,90 +1033,91 @@ class HumanDataExtraction():
             RSP_C = BioPac.named_channels['Chest Respiration'].data
             RSP_C_T = BioPac.named_channels['Chest Respiration'].time_index
             eda_data = EDA['EDA']
-            if VAS_plot:
-                # Original Combined Plot
-                fig, ax = plt.subplots(6, figsize=(15, 18), sharex=True)
+            if Signals_plot:
+                if VAS_plot:
+                    # Original Combined Plot
+                    fig, ax = plt.subplots(6, figsize=(15, 18), sharex=True)
 
-                ax[0].plot(EDA['Time'], EDA['EDA'], label=f"Participant {ID}")
-                ax[1].scatter(RSP_D_T, RSP_D, label=f"Participant {ID}")
-                ax[2].scatter(RSP_C_T, RSP_C, label=f"Participant {ID}")
-                ax[3].scatter(RR['Time'], RR['RR'], label=f"Participant {ID}")
-                # Set y-axis limits to 500-1500 ms for consistent RR interval scaling
-                ax[3].set_ylim([400, 1500])
+                    ax[0].plot(EDA['Time'], EDA['EDA'], label=f"Participant {ID}")
+                    ax[1].scatter(RSP_D_T, RSP_D, label=f"Participant {ID}")
+                    ax[2].scatter(RSP_C_T, RSP_C, label=f"Participant {ID}")
+                    ax[3].scatter(RR['Time'], RR['RR'], label=f"Participant {ID}")
+                    # Set y-axis limits to 500-1500 ms for consistent RR interval scaling
+                    ax[3].set_ylim([400, 1500])
+                    ax[0].set_ylim([-0.005, 6.4])  # Set y-axis limits to 500-1200 ms for consistent RR interval scaling
 
-                stress_data = Trigger_df[Trigger_df["Task"] == "VAS_Stress"]
-                fatigue_data = Trigger_df[Trigger_df["Task"] == "VAS_Fatigue"]
+                    stress_data = Trigger_df[Trigger_df["Task"] == "VAS_Stress"]
+                    fatigue_data = Trigger_df[Trigger_df["Task"] == "VAS_Fatigue"]
 
-                ax[4].scatter(stress_data["Start"], stress_data["Score"], color='blue', label="VAS Stress")
-                ax[5].scatter(fatigue_data["Start"], fatigue_data["Score"], color='red', label="VAS Fatigue")
+                    ax[4].scatter(stress_data["Start"], stress_data["Score"], color='blue', label="VAS Stress")
+                    ax[5].scatter(fatigue_data["Start"], fatigue_data["Score"], color='red', label="VAS Fatigue")
 
-                for _, trigger in Trigger_df.iterrows():
-                    start_time = trigger["Start"]
-                    end_time = trigger["End"]
-                    task_name = trigger["Task"]
-                    task_score = trigger["Score"]
-                    if pd.notna(end_time):
-                        if task_name == 'CB_easy' or task_name == 'CB_hard':
-                            ax[0].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
-                            ax[1].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
-                            ax[2].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
-                            ax[3].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
-                            ax[4].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
-                            ax[5].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
-                            ax[0].text((start_time + end_time) / 2, min(eda_data) - 0.10 * max(eda_data), task_name,
-                                       ha='center', fontsize=10, color='black')
-                        elif task_name == 'PA_easy' or task_name == 'PA_medium' or task_name == 'PA_hard':
-                            ax[0].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
-                            ax[1].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
-                            ax[2].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
-                            ax[3].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
-                            ax[4].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
-                            ax[5].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
-                            ax[0].text((start_time + end_time) / 2, min(eda_data) - 0.10 * max(eda_data), task_name,
-                                       ha='center', fontsize=10, color='black')
-                        elif task_name == 'TC_easy' or task_name == 'TC_hard':
-                            ax[0].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
-                            ax[1].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
-                            ax[2].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
-                            ax[3].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
-                            ax[4].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
-                            ax[5].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
-                            ax[0].text((start_time + end_time) / 2, min(eda_data) - 0.10 * max(eda_data), task_name,
-                                       ha='center', fontsize=10, color='black')
+                    for _, trigger in Trigger_df.iterrows():
+                        start_time = trigger["Start"]
+                        end_time = trigger["End"]
+                        task_name = trigger["Task"]
+                        if pd.notna(end_time):
+                            if task_name == 'CB_easy' or task_name == 'CB_hard':
+                                ax[0].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
+                                ax[1].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
+                                ax[2].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
+                                ax[3].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
+                                ax[4].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
+                                ax[5].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
+                                ax[0].text((start_time + end_time) / 2, min(eda_data) - 0.10 * max(eda_data), task_name,
+                                           ha='center', fontsize=10, color='black')
+                            elif task_name == 'PA_easy' or task_name == 'PA_medium' or task_name == 'PA_hard':
+                                ax[0].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
+                                ax[1].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
+                                ax[2].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
+                                ax[3].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
+                                ax[4].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
+                                ax[5].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
+                                ax[0].text((start_time + end_time) / 2, min(eda_data) - 0.10 * max(eda_data), task_name,
+                                           ha='center', fontsize=10, color='black')
+                            elif task_name == 'TC_easy' or task_name == 'TC_hard':
+                                ax[0].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
+                                ax[1].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
+                                ax[2].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
+                                ax[3].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
+                                ax[4].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
+                                ax[5].axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
+                                ax[0].text((start_time + end_time) / 2, min(eda_data) - 0.10 * max(eda_data), task_name,
+                                           ha='center', fontsize=10, color='black')
+                            else:
+                                ax[0].axvspan(start_time, end_time, color='#C3E6CB', alpha=0.3)
+                                ax[1].axvspan(start_time, end_time, color='#C3E6CB', alpha=0.3)
+                                ax[2].axvspan(start_time, end_time, color='#C3E6CB', alpha=0.3)
+                                ax[3].axvspan(start_time, end_time, color='#C3E6CB', alpha=0.3)
+                                ax[4].axvspan(start_time, end_time, color='#C3E6CB', alpha=0.3)
+                                ax[5].axvspan(start_time, end_time, color='#C3E6CB', alpha=0.3)
+                                ax[0].text((start_time + end_time) / 2, min(eda_data) - 0.10 * max(eda_data), task_name,
+                                           ha='center', fontsize=10, color='black')
                         else:
-                            ax[0].axvspan(start_time, end_time, color='#C3E6CB', alpha=0.3)
-                            ax[1].axvspan(start_time, end_time, color='#C3E6CB', alpha=0.3)
-                            ax[2].axvspan(start_time, end_time, color='#C3E6CB', alpha=0.3)
-                            ax[3].axvspan(start_time, end_time, color='#C3E6CB', alpha=0.3)
-                            ax[4].axvspan(start_time, end_time, color='#C3E6CB', alpha=0.3)
-                            ax[5].axvspan(start_time, end_time, color='#C3E6CB', alpha=0.3)
-                            ax[0].text((start_time + end_time) / 2, min(eda_data) - 0.10 * max(eda_data), task_name,
-                                       ha='center', fontsize=10, color='black')
-                    else:
-                        ax[0].axvline(start_time, color='green', linestyle='--')
-                        ax[1].axvline(start_time, color='green', linestyle='--')
-                        ax[2].axvline(start_time, color='green', linestyle='--')
-                        ax[3].axvline(start_time, color='green', linestyle='--')
-                        ax[4].axvline(start_time, color='green', linestyle='--')
-                        ax[5].axvline(start_time, color='green', linestyle='--')
+                            ax[0].axvline(start_time, color='green', linestyle='--')
+                            ax[1].axvline(start_time, color='green', linestyle='--')
+                            ax[2].axvline(start_time, color='green', linestyle='--')
+                            ax[3].axvline(start_time, color='green', linestyle='--')
+                            ax[4].axvline(start_time, color='green', linestyle='--')
+                            ax[5].axvline(start_time, color='green', linestyle='--')
 
-                ax[0].set_ylabel("EDA Signal")
-                ax[0].legend(loc="upper right", fontsize=8)
-                ax[1].set_ylabel("RSP_D")
-                ax[1].legend(loc="upper right", fontsize=8)
-                ax[2].set_ylabel("RSP_C")
-                ax[2].legend(loc="upper right", fontsize=8)
-                ax[3].set_ylabel("ECG RR intervals")
-                ax[3].legend(loc="upper right", fontsize=8)
-                ax[4].set_ylabel("VAS Stress Score")
-                ax[4].legend(loc="upper right", fontsize=8)
-                ax[5].set_ylabel("VAS Fatigue Score")
-                ax[5].legend(loc="upper right", fontsize=8)
+                    ax[0].set_ylabel("EDA Signal")
+                    ax[0].legend(loc="upper right", fontsize=8)
+                    ax[1].set_ylabel("RSP_D")
+                    ax[1].legend(loc="upper right", fontsize=8)
+                    ax[2].set_ylabel("RSP_C")
+                    ax[2].legend(loc="upper right", fontsize=8)
+                    ax[3].set_ylabel("ECG RR intervals")
+                    ax[3].legend(loc="upper right", fontsize=8)
+                    ax[4].set_ylabel("VAS Stress Score")
+                    ax[4].legend(loc="upper right", fontsize=8)
+                    ax[5].set_ylabel("VAS Fatigue Score")
+                    ax[5].legend(loc="upper right", fontsize=8)
 
-                plt.tight_layout()
-                plot_path = fr'{directory}\\plots\\Trigger_Plot_{ID}_vas.png'
-                plt.savefig(plot_path, dpi=300)
-                plt.show()
+                    plt.tight_layout()
+                    plot_path = fr'{directory}\\plots\\Trigger_Plot_{ID}_vas.png'
+                    plt.savefig(plot_path, dpi=300)
+                    plt.show()
 
                 # Create separate directories for each signal type if they don't exist
                 analysis_base_path = "C:\\Users\\e3bom\\Desktop\\Human Bio Signals Analysis\\Analysis"
@@ -1061,127 +1130,135 @@ class HumanDataExtraction():
                     os.makedirs(path, exist_ok=True)
 
                 # 1. Separate EDA Plot
-                fig_eda = plt.figure(figsize=(12, 6))
-                ax_eda = fig_eda.add_subplot(111)
-                ax_eda.plot(EDA['Time'], EDA['EDA'], label=f"Participant {ID}")
-                ax_eda.set_title(f"EDA Signal - Participant {ID}  Group:{Group}")
-                ax_eda.set_xlabel("Time (s)")
-                ax_eda.set_ylabel("EDA Signal")
-                ax_eda.set_ylim([0, 3])  # Set y-axis limits to 500-1200 ms for consistent RR interval scaling
+                if EDA_plot:
+                    fig_eda = plt.figure(figsize=(12, 6))
+                    ax_eda = fig_eda.add_subplot(111)
+                    ax_eda.plot(EDA['Time'], EDA['EDA'], label=f"Participant {ID}")
+                    ax_eda.set_title(f"EDA Signal - Participant {ID}  Group:{Group}")
+                    ax_eda.set_xlabel("Time (s)")
+                    ax_eda.set_ylabel("EDA Signal")
+                    ax_eda.set_ylim([-0.005, 6.4])  # Set y-axis limits to 500-1200 ms for consistent RR interval scaling
 
-                # Add task regions to the EDA plot
-                for _, trigger in Trigger_df.iterrows():
-                    start_time = trigger["Start"]
-                    end_time = trigger["End"]
-                    task_name = trigger["Task"]
+                    # Add task regions to the EDA plot
+                    for _, trigger in Trigger_df.iterrows():
+                        start_time = trigger["Start"]
+                        end_time = trigger["End"]
+                        task_name = trigger["Task"]
 
-                    if pd.notna(end_time):
-                        if task_name in ['CB_easy', 'CB_hard', 'PA_easy', 'PA_medium', 'PA_hard', 'TC_easy', 'TC_hard']:
-                            ax_eda.axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
-                            # Use transform for text positioning to avoid blended transform warning
-                            # y_pos = min(eda_data) - 0.10 * max(eda_data)
-                            # ax_eda.text(0.5 * (start_time + end_time), y_pos,
-                            #             task_name, ha='center', fontsize=10, color='black')
+                        if pd.notna(end_time):
+                            if task_name in ['CB_easy', 'CB_hard', 'PA_easy', 'PA_medium', 'PA_hard', 'TC_easy', 'TC_hard']:
+                                ax_eda.axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
+                                # Use transform for text positioning to avoid blended transform warning
+                                # y_pos = min(eda_data) - 0.10 * max(eda_data)
+                                # ax_eda.text(0.5 * (start_time + end_time), y_pos,
+                                #             task_name, ha='center', fontsize=10, color='black')
+                            else:
+                                ax_eda.axvspan(start_time, end_time, color='#C3E6CB', alpha=0.3)
+                                # y_pos = min(eda_data) - 0.10 * max(eda_data)
+                                # ax_eda.text(0.5 * (start_time + end_time), y_pos,
+                                #             task_name, ha='center', fontsize=10, color='black')
                         else:
-                            ax_eda.axvspan(start_time, end_time, color='#C3E6CB', alpha=0.3)
-                            # y_pos = min(eda_data) - 0.10 * max(eda_data)
-                            # ax_eda.text(0.5 * (start_time + end_time), y_pos,
-                            #             task_name, ha='center', fontsize=10, color='black')
-                    else:
-                        ax_eda.axvline(start_time, color='green', linestyle='--')
+                            ax_eda.axvline(start_time, color='green', linestyle='--')
 
-                plt.legend(loc='upper right')  # Specify legend location instead of 'best'
-                plt.tight_layout()
-                plt.savefig(f"{eda_path}\\EDA_P{ID}.png", dpi=300)
-                plt.close()
+                    plt.legend(loc='upper right')  # Specify legend location instead of 'best'
+                    plt.tight_layout()
+                    plt.savefig(f"{eda_path}\\EDA_P{ID}.png", dpi=300)
+                    print(fr"EDA plot {ID}")
+                    plt.close()
 
                 # 2. Separate RSP_D Plot
-                fig_rsp_d = plt.figure(figsize=(12, 6))
-                ax_rsp_d = fig_rsp_d.add_subplot(111)
-                RSP_D = RSP_D - RSP_D.mean()
-                ax_rsp_d.scatter(RSP_D_T, RSP_D, label=f"Participant {ID}", s=1)
-                ax_rsp_d.set_title(f"Diaphragmatic Respiration - Participant {ID} Group:{Group}")
-                ax_rsp_d.set_xlabel("Time (s)")
-                ax_rsp_d.set_ylabel("RSP_D")
-                ax_rsp_d.set_ylim([-8, 8])  # Set y-axis limits to 500-1200 ms for consistent RR interval scaling
+                if RSP_D_plot:
+                    fig_rsp_d = plt.figure(figsize=(12, 6))
+                    ax_rsp_d = fig_rsp_d.add_subplot(111)
+                    RSP_D = RSP_D - RSP_D.mean()
+                    ax_rsp_d.scatter(RSP_D_T, RSP_D, label=f"Participant {ID}", s=1)
+                    ax_rsp_d.set_title(f"Diaphragmatic Respiration - Participant {ID} Group:{Group}")
+                    ax_rsp_d.set_xlabel("Time (s)")
+                    ax_rsp_d.set_ylabel("RSP_D")
+                    ax_rsp_d.set_ylim([-8, 8])  # Set y-axis limits to 500-1200 ms for consistent RR interval scaling
 
-                # Add task regions to the RSP_D plot
-                for _, trigger in Trigger_df.iterrows():
-                    start_time = trigger["Start"]
-                    end_time = trigger["End"]
-                    task_name = trigger["Task"]
+                    # Add task regions to the RSP_D plot
+                    for _, trigger in Trigger_df.iterrows():
+                        start_time = trigger["Start"]
+                        end_time = trigger["End"]
+                        task_name = trigger["Task"]
 
-                    if pd.notna(end_time):
-                        if task_name in ['CB_easy', 'CB_hard', 'PA_easy', 'PA_medium', 'PA_hard', 'TC_easy', 'TC_hard']:
-                            ax_rsp_d.axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
+                        if pd.notna(end_time):
+                            if task_name in ['CB_easy', 'CB_hard', 'PA_easy', 'PA_medium', 'PA_hard', 'TC_easy', 'TC_hard']:
+                                ax_rsp_d.axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
+                            else:
+                                ax_rsp_d.axvspan(start_time, end_time, color='#C3E6CB', alpha=0.3)
                         else:
-                            ax_rsp_d.axvspan(start_time, end_time, color='#C3E6CB', alpha=0.3)
-                    else:
-                        ax_rsp_d.axvline(start_time, color='green', linestyle='--')
+                            ax_rsp_d.axvline(start_time, color='green', linestyle='--')
 
-                ax_rsp_d.legend(loc='upper right')  # Specify legend location instead of 'best'
-                plt.tight_layout()
-                plt.savefig(f"{rsp_d_path}\\RSP_D_P{ID}.png", dpi=300)
-                plt.close()
+                    ax_rsp_d.legend(loc='upper right')  # Specify legend location instead of 'best'
+                    plt.tight_layout()
+                    plt.savefig(f"{rsp_d_path}\\RSP_D_P{ID}.png", dpi=300)
+                    print(fr"RSP_D plot {ID}")
+                    plt.close()
 
                 # 3. Separate RSP_C Plot
-                fig_rsp_c = plt.figure(figsize=(12, 6))
-                ax_rsp_c = fig_rsp_c.add_subplot(111)
-                RSP_C=RSP_C-RSP_C.mean()
-                ax_rsp_c.scatter(RSP_C_T, RSP_C, label=f"Participant {ID}", s=1)
-                ax_rsp_c.set_title(f"Chest Respiration - Participant {ID} Group:{Group}")
-                ax_rsp_c.set_xlabel("Time (s)")
-                ax_rsp_c.set_ylabel("RSP_C")
-                ax_rsp_c.set_ylim([-8, 8])  # Set y-axis limits to 500-1200 ms for consistent RR interval scaling
+                if RSP_C_plot:
+                    fig_rsp_c = plt.figure(figsize=(12, 6))
+                    ax_rsp_c = fig_rsp_c.add_subplot(111)
+                    RSP_C=RSP_C-RSP_C.mean()
+                    ax_rsp_c.scatter(RSP_C_T, RSP_C, label=f"Participant {ID}", s=1)
+                    ax_rsp_c.set_title(f"Chest Respiration - Participant {ID} Group:{Group}")
+                    ax_rsp_c.set_xlabel("Time (s)")
+                    ax_rsp_c.set_ylabel("RSP_C")
+                    ax_rsp_c.set_ylim([-8, 8])  # Set y-axis limits to 500-1200 ms for consistent RR interval scaling
 
-                # Add task regions to the RSP_C plot
-                for _, trigger in Trigger_df.iterrows():
-                    start_time = trigger["Start"]
-                    end_time = trigger["End"]
-                    task_name = trigger["Task"]
+                    # Add task regions to the RSP_C plot
+                    for _, trigger in Trigger_df.iterrows():
+                        start_time = trigger["Start"]
+                        end_time = trigger["End"]
+                        task_name = trigger["Task"]
 
-                    if pd.notna(end_time):
-                        if task_name in ['CB_easy', 'CB_hard', 'PA_easy', 'PA_medium', 'PA_hard', 'TC_easy', 'TC_hard']:
-                            ax_rsp_c.axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
+                        if pd.notna(end_time):
+                            if task_name in ['CB_easy', 'CB_hard', 'PA_easy', 'PA_medium', 'PA_hard', 'TC_easy', 'TC_hard']:
+                                ax_rsp_c.axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
+                            else:
+                                ax_rsp_c.axvspan(start_time, end_time, color='#C3E6CB', alpha=0.3)
                         else:
-                            ax_rsp_c.axvspan(start_time, end_time, color='#C3E6CB', alpha=0.3)
-                    else:
-                        ax_rsp_c.axvline(start_time, color='green', linestyle='--')
+                            ax_rsp_c.axvline(start_time, color='green', linestyle='--')
 
-                ax_rsp_c.legend(loc='upper right')  # Specify legend location instead of 'best'
-                plt.tight_layout()
-                plt.savefig(f"{rsp_c_path}\\RSP_C_P{ID}.png", dpi=300)
-                plt.close()
+                    ax_rsp_c.legend(loc='upper right')  # Specify legend location instead of 'best'
+                    plt.tight_layout()
+                    plt.savefig(f"{rsp_c_path}\\RSP_C_P{ID}.png", dpi=300)
+                    print(fr"RSP_C plot {ID}")
+                    plt.close()
 
                 # 4. Separate RR Plot
-                fig_rr = plt.figure(figsize=(15, 3))  # width 15″, height 3″
-                ax_rr = fig_rr.add_subplot(111)
-                ax_rr.scatter(RR['Time'], RR['RR'], label=f"Participant {ID}",
-                              s=10)  # Increased point size to 25 for better visibility
-                # Set y-axis limits to 500-1200 ms for consistent RR interval scaling
-                ax_rr.set_title(f"RR Intervals - Participant {ID} Group:{Group}" )
-                ax_rr.set_xlabel("Time (s)")
-                ax_rr.set_ylabel("RR Interval (ms)")
-                ax_rr.set_ylim([400, 1500])  # Set y-axis limits to 500-1200 ms for consistent RR interval scaling
+                if RR_plot:
+                    fig_rr = plt.figure(figsize=(15, 3))  # width 15″, height 3″
+                    ax_rr = fig_rr.add_subplot(111)
+                    ax_rr.scatter(RR['Time'], RR['RR'], label=f"Participant {ID}",
+                                  s=10)  # Increased point size to 25 for better visibility
+                    # Set y-axis limits to 500-1200 ms for consistent RR interval scaling
+                    ax_rr.set_title(f"RR Intervals - Participant {ID} Group:{Group}" )
+                    ax_rr.set_xlabel("Time (s)")
+                    ax_rr.set_ylabel("RR Interval (ms)")
+                    ax_rr.set_ylim([400, 1500])  # Set y-axis limits to 500-1200 ms for consistent RR interval scaling
 
-                # Add task regions to the RR plot
-                for _, trigger in Trigger_df.iterrows():
-                    start_time = trigger["Start"]
-                    end_time = trigger["End"]
-                    task_name = trigger["Task"]
+                    # Add task regions to the RR plot
+                    for _, trigger in Trigger_df.iterrows():
+                        start_time = trigger["Start"]
+                        end_time = trigger["End"]
+                        task_name = trigger["Task"]
 
-                    if pd.notna(end_time):
-                        if task_name in ['CB_easy', 'CB_hard', 'PA_easy', 'PA_medium', 'PA_hard', 'TC_easy', 'TC_hard']:
-                            ax_rr.axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
+                        if pd.notna(end_time):
+                            if task_name in ['CB_easy', 'CB_hard', 'PA_easy', 'PA_medium', 'PA_hard', 'TC_easy', 'TC_hard']:
+                                ax_rr.axvspan(start_time, end_time, color='#AEC6CF', alpha=0.3)
+                            else:
+                                ax_rr.axvspan(start_time, end_time, color='#C3E6CB', alpha=0.3)
                         else:
-                            ax_rr.axvspan(start_time, end_time, color='#C3E6CB', alpha=0.3)
-                    else:
-                        ax_rr.axvline(start_time, color='green', linestyle='--')
+                            ax_rr.axvline(start_time, color='green', linestyle='--')
 
-                ax_rr.legend(loc='upper right')
-                plt.tight_layout()
-                plt.savefig(f"{rr_path}\\RR_P{ID}.png", dpi=300)
-                plt.close()
+                    ax_rr.legend(loc='upper right')
+                    plt.tight_layout()
+                    plt.savefig(f"{rr_path}\\RR_P{ID}.png", dpi=300)
+                    print(fr"RR plot {ID}")
+                    plt.close()
 
             if Cor_plot:
                 # ──────────────────────────── 1.  BEFORE the participant loop ─────────────────────────
@@ -1681,8 +1758,6 @@ class HumanDataExtraction():
 
         # ── Config ──────────────────────────────────────────
         interpolate_rr = False                  # RR interpolation toggle
-        # window_sizes   = [30]        # sec
-        # overlaps       = [0.0]
         window_sizes = [5, 10, 30, 60]  # sec
         overlaps = [0.0, 0.5]
         # fraction
@@ -1819,7 +1894,7 @@ class HumanDataExtraction():
                         RSP_df_diaph    = pd.DataFrame()
 
                         for signal_type in BioPac.named_channels:
-                            signal_type='ECG'
+                            # signal_type='EDA'
                             part_data = BioPac.named_channels[signal_type].data
                             for j, i in enumerate(range(0, len(part_data) - window_samples + 1, step)):
                                 segment= part_data[i:i + window_samples]
@@ -1950,15 +2025,20 @@ class HumanDataExtraction():
                 print(f"❌ Error processing P_{ID}: {e}")
 
         # ── Save combined datasets ─────────────────────────
-        for (window_size, overlap), df in total_HRV_dict.items():
-            df.to_csv(os.path.join(total_dataset_dir,
-                    f'Dataset_HRV_window{window_size}s_{int(overlap * 100)}.csv'), index=False)
-        for (window_size, overlap), df in total_EDA_dict.items():
-            df.to_csv(os.path.join(total_dataset_dir,
-                    f'Dataset_EDA_window{window_size}s_{int(overlap * 100)}.csv'), index=False)
-        for (window_size, overlap), df in total_RSP_chest_dict.items():
-            df.to_csv(os.path.join(total_dataset_dir,
-                    f'Dataset_RSP_Chest_window{window_size}s_{int(overlap * 100)}.csv'), index=False)
-        for (window_size, overlap), df in total_RSP_diaph_dict.items():
-            df.to_csv(os.path.join(total_dataset_dir,
-                    f'Dataset_RSP_Diaph_window{window_size}s_{int(overlap * 100)}.csv'), index=False)
+        for (window_size, overlap) in total_HRV_dict.keys():
+            hrv_df = total_HRV_dict.get((window_size, overlap), pd.DataFrame())
+            eda_df = total_EDA_dict.get((window_size, overlap), pd.DataFrame())
+            rsp_chest_df = total_RSP_chest_dict.get((window_size, overlap), pd.DataFrame())
+            rsp_diaph_df = total_RSP_diaph_dict.get((window_size, overlap), pd.DataFrame())
+
+            # Merge all on Time, ID, Group
+            merged_df = hrv_df.merge(eda_df, on=["Time", "ID", "Group"], how="outer")
+            merged_df = merged_df.merge(rsp_chest_df, on=["Time", "ID", "Group"], how="outer")
+            merged_df = merged_df.merge(rsp_diaph_df, on=["Time", "ID", "Group"], how="outer")
+
+            # Optional: drop duplicated columns or reorder if needed
+            merged_df.to_csv(os.path.join(
+                total_dataset_dir,
+                f'Dataset_{window_size}s_{int(overlap * 100)}.csv'
+            ), index=False)
+
