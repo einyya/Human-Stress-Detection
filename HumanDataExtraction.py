@@ -9,6 +9,10 @@ import seaborn as sns
 import os
 from scipy.stats import linregress
 import pandas as pd
+from sklearn.linear_model import LinearRegression
+from scipy.stats import skew, kurtosis
+from scipy.signal import welch
+import antropy as ant
 
 
 # Press the green button in the gutter to run the script.
@@ -1757,9 +1761,10 @@ class HumanDataExtraction():
         and FromTrigger columns drawn from the participant's Trigger CSV."""
 
         # ── Config ──────────────────────────────────────────
-        interpolate_rr = False                  # RR interpolation toggle
-        window_sizes = [5, 10, 30, 60]  # sec
+        window_sizes = [5,10,30, 60]  # sec
         overlaps = [0.0, 0.5]
+        # window_sizes = [60]  # sec
+        # overlaps = [0.0,]
         # fraction
         total_dataset_dir = r'C:\Users\e3bom\Desktop\Human Bio Signals Analysis\Participants\Dataset'
         os.makedirs(total_dataset_dir, exist_ok=True)
@@ -1812,6 +1817,165 @@ class HumanDataExtraction():
                 sample_rate = BioPac.named_channels['ECG'].samples_per_second
 
                 # ── Helper: label per timepoint ─────────────
+                def impute_features(df, missing_threshold=0.15, verbose=True):
+                        """
+                        Missing value imputation using linear regression model
+
+                        Method:
+                        1. Check columns with missing values
+                        2. For each missing value - check which values are not missing from other features
+                        3. Build a model of the missing feature relative to the non-missing features
+                        4. Complete the value using the prediction
+                        """
+                        df = df.copy()
+
+                        # Define columns that are not included in the imputation process
+                        excluded_columns = ['ID', 'Group', 'Time', 'Stress', 'Fatigue', 'Class']
+                        numeric_cols = [col for col in df.columns if col not in excluded_columns]
+
+                        if verbose:
+                            print(f"🔍 Starting imputation process for {len(numeric_cols)} columns")
+
+                        # Step 1: Identify and remove columns with too many missing values
+                        cols_to_drop = []
+                        n_rows = len(df)
+
+                        for col in numeric_cols:
+                            missing_count = df[col].isna().sum()
+                            missing_ratio = missing_count / n_rows
+
+                            if missing_ratio > missing_threshold:
+                                cols_to_drop.append(col)
+                                if verbose:
+                                    print(f"❌ Dropping column '{col}' - {missing_ratio:.1%} missing values")
+
+                        # Remove columns with too many missing values
+                        df.drop(columns=cols_to_drop, inplace=True)
+                        numeric_cols = [col for col in numeric_cols if col not in cols_to_drop]
+
+                        # Check if only excluded columns remain
+                        if len(numeric_cols) == 0:
+                            if verbose:
+                                print("⚠️ No numeric columns left after filtering")
+                            return df
+
+                        # Step 2: Sort columns by number of missing values (ascending order)
+                        # This way we start with columns that have the least missing values
+                        missing_counts = [(col, df[col].isna().sum()) for col in numeric_cols]
+                        missing_counts.sort(key=lambda x: x[1])
+
+                        if verbose:
+                            print(f"📊 Processing columns in order of missing values:")
+                            for col, count in missing_counts:
+                                if count > 0:
+                                    print(f"   • {col}: {count} missing values")
+
+                        # Step 3: Impute each column using linear regression
+                        for col, missing_count in missing_counts:
+                            if missing_count == 0:
+                                continue  # Skip columns with no missing values
+
+                            if verbose:
+                                print(f"\n🔧 Processing column '{col}' ({missing_count} missing values)")
+
+                            # Step 3.1: Identify which values are not missing from other features
+                            other_features = [c for c in numeric_cols if c != col]
+
+                            if len(other_features) == 0:
+                                # No other features available, use mean imputation
+                                mean_value = df[col].mean()
+                                df[col].fillna(mean_value, inplace=True)
+                                if verbose:
+                                    print(f"   ℹ️ No other features available, used mean imputation")
+                                continue
+
+                            # Step 3.2: Separate rows with and without missing values in target column
+                            has_value_mask = df[col].notna()
+                            missing_mask = df[col].isna()
+
+                            # Step 3.3: Predict missing values using dynamic feature selection
+                            try:
+                                # Step 3.4: Predict missing values - dynamic feature selection for each row
+                                X_test_candidates = df.loc[missing_mask, other_features]
+                                predicted_count = 0
+
+                                # For each row with missing target value, build a custom model based on available features
+                                for test_idx in X_test_candidates.index:
+                                    # Get available features for this specific row
+                                    available_features = []
+                                    for feature in other_features:
+                                        if pd.notna(df.loc[test_idx, feature]):
+                                            available_features.append(feature)
+
+                                    if len(available_features) == 0:
+                                        # No features available for this row, skip (will be handled by mean imputation later)
+                                        continue
+
+                                    # Build training set using only the available features
+                                    # Get training data where both target and all available features are not missing
+                                    train_mask = has_value_mask.copy()
+                                    for feature in available_features:
+                                        train_mask = train_mask & df[feature].notna()
+
+                                    if train_mask.sum() < 2:
+                                        # Not enough training samples, skip this row
+                                        continue
+
+                                    try:
+                                        # Train model with only available features
+                                        X_train_custom = df.loc[train_mask, available_features]
+                                        y_train_custom = df.loc[train_mask, col]
+
+                                        # Create and train custom model
+                                        custom_model = LinearRegression()
+                                        custom_model.fit(X_train_custom, y_train_custom)
+
+                                        # Make prediction for this specific row
+                                        X_test_row = df.loc[[test_idx], available_features]
+                                        prediction = custom_model.predict(X_test_row)[0]
+
+                                        # Update the dataframe
+                                        df.loc[test_idx, col] = prediction
+                                        predicted_count += 1
+
+                                    except Exception as row_e:
+                                        # Skip this row if model fails
+                                        if verbose:
+                                            print(f"   ⚠️ Failed to predict row {test_idx}: {str(row_e)}")
+                                        continue
+
+                                # For remaining missing values, use mean imputation
+                                remaining_missing = df[col].isna().sum()
+                                if remaining_missing > 0:
+                                    mean_value = df.loc[has_value_mask, col].mean()
+                                    df[col].fillna(mean_value, inplace=True)
+
+                                    if verbose:
+                                        print(
+                                            f"   ✅ Imputed {predicted_count} values by dynamic regression, {remaining_missing} by mean")
+                                else:
+                                    if verbose:
+                                        print(
+                                            f"   ✅ Imputed all {predicted_count} missing values using dynamic regression")
+
+                            except Exception as e:
+                                # Fallback to mean imputation on any error
+                                mean_value = df[col].mean()
+                                df[col].fillna(mean_value, inplace=True)
+                                if verbose:
+                                    print(f"   ⚠️ Regression failed ({str(e)}), used mean imputation")
+
+                        if verbose:
+                            print(f"\n🎉 Imputation completed successfully!")
+
+                        return df
+
+                def compute_slope(y):
+                    x = np.arange(len(y))
+                    if np.all(np.isnan(y)) or len(y) < 2:
+                        return np.nan
+                    return np.polyfit(x, y, 1)[0]  # return the slope only
+
                 def label_window(t):
                     for _, tr in Trigger_df.iterrows():
                         task = str(tr["Task"]).lower()
@@ -1823,8 +1987,6 @@ class HumanDataExtraction():
                     return None
 
                                 # ── Helper: stress & fatigue  ───────────
-
-                first_iteration = True
                 def trigger_attrs(t):
                     """Return Stress, Fatigue and forward gap (Δt) to the **next**
                     VAS rating starting at or after *t*.  Because the experiment
@@ -1859,27 +2021,72 @@ class HumanDataExtraction():
                     return stress, fatigue
 
                 # ── Helper: HRV calculation ────────────────
-                def calculate_hrv_features(rr_values):
+                def calculate_hrv_features(rr_values, interpolate_rr=True, sampling_rate=4):
                     RR = pd.DataFrame({"RR": rr_values})
                     RR.loc[(RR['RR'] < 300) | (RR['RR'] > 1500), 'RR'] = np.nan
+
                     if interpolate_rr:
                         RR['RR'] = RR['RR'].interpolate(limit_direction='both')
+
                     rr = RR['RR'].dropna().values
                     if len(rr) < 3:
-                        return {k: None for k in [
-                            'HRV_MeanNN','HRV_SDNN','HRV_RMSSD',
-                            'HRV_CVNN','HRV_pNN20','HRV_pNN50']}
+                        return {k: np.nan for k in [
+                            'HRV_MeanNN', 'HRV_SDNN', 'HRV_RMSSD', 'HRV_CVNN', 'HRV_pNN20', 'HRV_pNN50',
+                            'HRV_MedianNN', 'HRV_IQRNN', 'HRV_LF', 'HRV_HF', 'HRV_VLF',
+                            'HRV_LF_HF', 'HRV_TotalPower', 'HRV_LF_Norm', 'HRV_HF_Norm'
+                        ]}
+
+                    # Time-domain
                     mean_nn = np.mean(rr)
-                    sdnn    = np.std(rr, ddof=1)
+                    sdnn = np.std(rr, ddof=1)
                     diff_rr = np.diff(rr)
-                    return {
+                    rmssd = np.sqrt(np.mean(diff_rr ** 2))
+                    pnn20 = np.sum(np.abs(diff_rr) > 20) / len(diff_rr) * 100
+                    pnn50 = np.sum(np.abs(diff_rr) > 50) / len(diff_rr) * 100
+                    median_nn = np.median(rr)
+                    iqr_nn = np.percentile(rr, 75) - np.percentile(rr, 25)
+
+                    # Frequency-domain
+                    try:
+                        hrv_freq = nk.hrv_frequency(rr, sampling_rate=sampling_rate, method="welch", show=False).iloc[0]
+                        freq_features = {
+                            'HRV_VLF': hrv_freq.get("HRV_VLF", np.nan),
+                            'HRV_LF': hrv_freq.get("HRV_LF", np.nan),
+                            'HRV_HF': hrv_freq.get("HRV_HF", np.nan),
+                            'HRV_LF_HF': hrv_freq.get("HRV_LF/HF", np.nan),
+                            'HRV_TotalPower': hrv_freq.get("HRV_TotalPower", np.nan),
+                            'HRV_LF_Norm': hrv_freq.get("HRV_LFnu", np.nan),
+                            'HRV_HF_Norm': hrv_freq.get("HRV_HFnu", np.nan),
+                        }
+                    except Exception as e:
+                        freq_features = {
+                            'HRV_VLF': np.nan, 'HRV_LF': np.nan, 'HRV_HF': np.nan, 'HRV_LF_HF': np.nan,
+                            'HRV_TotalPower': np.nan, 'HRV_LF_Norm': np.nan, 'HRV_HF_Norm': np.nan
+                        }
+
+                    # Combine all features
+                    features = {
                         'HRV_MeanNN': mean_nn,
-                        'HRV_SDNN'  : sdnn,
-                        'HRV_RMSSD' : np.sqrt(np.mean(diff_rr ** 2)),
-                        'HRV_CVNN'  : sdnn / mean_nn * 100,
-                        'HRV_pNN20' : np.sum(np.abs(diff_rr) > 20) / len(diff_rr) * 100,
-                        'HRV_pNN50' : np.sum(np.abs(diff_rr) > 50) / len(diff_rr) * 100,
+                        'HRV_SDNN': sdnn,
+                        'HRV_RMSSD': rmssd,
+                        'HRV_CVNN': sdnn / mean_nn * 100,
+                        'HRV_pNN20': pnn20,
+                        'HRV_pNN50': pnn50,
+                        'HRV_MedianNN': median_nn,
+                        'HRV_IQRNN': iqr_nn,
+                        **freq_features
                     }
+
+                    return features
+
+                def bandpower(data, fs, fmin, fmax):
+                    if len(data) < 4 or np.all(np.isnan(data)):
+                        return np.nan
+                    f, Pxx = welch(data, fs=fs, nperseg=min(256, len(data)))
+                    mask = (f >= fmin) & (f <= fmax)
+                    if not np.any(mask):
+                        return np.nan
+                    return np.trapz(Pxx[mask], f[mask])
 
                 # ── Window sweep ────────────────────────────
                 for window_size in window_sizes:
@@ -1892,9 +2099,9 @@ class HumanDataExtraction():
                         EDA_df          = pd.DataFrame()
                         RSP_df_chest    = pd.DataFrame()
                         RSP_df_diaph    = pd.DataFrame()
-
+                        # BioPac_named_channels=['Chest Respiration']
                         for signal_type in BioPac.named_channels:
-                            # signal_type='EDA'
+                        # for signal_type in BioPac_named_channels:
                             part_data = BioPac.named_channels[signal_type].data
                             for j, i in enumerate(range(0, len(part_data) - window_samples + 1, step)):
                                 segment= part_data[i:i + window_samples]
@@ -1906,7 +2113,7 @@ class HumanDataExtraction():
                                     # ── ECG → HRV ────────────────────────
                                     if signal_type == 'ECG':
                                         ecg_cleaned = nk.ecg_clean(segment, sampling_rate=sample_rate)
-                                        _, rpeaks   = nk.ecg_peaks(ecg_cleaned, sampling_rate=sample_rate)
+                                        _, rpeaks = nk.ecg_peaks(ecg_cleaned, sampling_rate=sample_rate)
                                         if len(rpeaks["ECG_R_Peaks"]) > 2:
                                             RR = np.diff(rpeaks["ECG_R_Peaks"]) / sample_rate * 1000
                                             hrv_features = calculate_hrv_features(RR)
@@ -1927,67 +2134,270 @@ class HumanDataExtraction():
                                     # ── EDA ──────────────────────────────
                                     elif signal_type == 'EDA':
                                         eda_signals, info = nk.eda_process(segment, sampling_rate=sample_rate)
-                                        eda_cleaned = medfilt(eda_signals['EDA_Clean'], kernel_size=101)
+                                        clean_signal = eda_signals[
+                                            'EDA_Clean'].values if 'EDA_Clean' in eda_signals else np.full(
+                                            len(segment), np.nan)
+                                        eda_cleaned = medfilt(clean_signal, kernel_size=101)
+
+                                        tonic = eda_signals.get('EDA_Tonic', pd.Series(np.nan, index=[0])).values
+                                        phasic = eda_signals.get('EDA_Phasic', pd.Series(np.nan, index=[0])).values
+
+                                        scr_peaks = info.get('SCR_Peaks', [])
+                                        scr_amplitude = np.nan
+                                        if len(phasic) > 0 and not np.all(np.isnan(phasic)):
+                                            scr_amplitude = np.nanmax(phasic) - np.nanmin(phasic)
+
+                                        eda_freq_power = bandpower(eda_cleaned, fs=sample_rate, fmin=0.045,
+                                                                   fmax=0.25)
+
                                         EDA_df = pd.concat([
                                             EDA_df,
-                                            pd.DataFrame([{**{
+                                            pd.DataFrame([{
                                                 'ID': ID,
                                                 'Group': Group,
                                                 'Time': center_time,
-                                                'EDA_Tonic_Mean'     : eda_signals['EDA_Tonic'].mean(),
-                                                'EDA_Phasic_Mean'    : eda_signals['EDA_Phasic'].mean(),
-                                                'SCR_Peaks_Count'    : len(info['SCR_Peaks']),
-                                                'SCR_Amplitude_Mean' : eda_signals['EDA_Phasic'].max() - eda_signals['EDA_Phasic'].min(),
-                                                'EDA_Clean_Median'   : eda_cleaned.mean(),
+                                                'EDA_Tonic_Mean': np.nanmean(tonic),
+                                                'EDA_Tonic_Std': np.nanstd(tonic),
+                                                'EDA_Tonic_Slope': compute_slope(tonic),
+                                                'EDA_Phasic_Mean': np.nanmean(phasic),
+                                                'EDA_Phasic_Std': np.nanstd(phasic),
+                                                'EDA_Phasic_Slope': compute_slope(phasic),
+                                                'EDA_Clean_Median': np.nanmedian(eda_cleaned),
+                                                'EDA_Clean_Slope': compute_slope(eda_cleaned),
+                                                'SCR_Peaks_Count': len(scr_peaks),
+                                                'SCR_Amplitude_Mean': scr_amplitude,
+                                                'EDA_Frequency_Power': eda_freq_power,
                                                 'Class': cls,
                                                 'Stress': stress,
                                                 'Fatigue': fatigue
-                                            }}])
+                                            }])
                                         ], ignore_index=True)
-
-                                    # ── Chest Respiration ────────────────
+                                    # ── RSP ──────────────────────────────
                                     elif signal_type == 'Chest Respiration':
-                                        rsp_signals, _ = nk.rsp_process(segment, sampling_rate=sample_rate)
-                                        RSP_df_chest = pd.concat([
-                                            RSP_df_chest,
-                                            pd.DataFrame([{**{
-                                                'ID': ID,
-                                                'Group': Group,
-                                                'Time': center_time,
-                                                'RSP_Rate'                 : rsp_signals.get('RSP_Rate', [None])[0],
-                                                'RSP_Amplitude'            : rsp_signals.get('RSP_Amplitude', [None])[0],
-                                                'RSP_Symmetry_PeakTrough'  : rsp_signals.get('RSP_Symmetry_PeakTrough', [None])[0],
-                                                'Class': cls,
-                                                'Stress': stress,
-                                                'Fatigue': fatigue
-                                            }}])
-                                        ], ignore_index=True)
+                                        rsp_signals, info = nk.rsp_process(segment, sampling_rate=sample_rate)
+                                        clean_signal = rsp_signals["RSP_Clean"].values
+                                        amplitude = rsp_signals["RSP_Amplitude"].values
+                                        rate = rsp_signals["RSP_Rate"].values
+                                        # BRV metrics
+                                        brv_features = {
+                                            "C_BRV_MeanRate": np.nanmean(rate),
+                                            "C_BRV_SD_Rate": np.nanstd(rate),
+                                            "C_BRV_CV_Rate": np.nanstd(rate) / np.nanmean(rate) * 100 if np.nanmean(
+                                                rate) > 0 else np.nan,
+                                            "C_BRV_MedianRate": np.nanmedian(rate),
+                                            "C_BRV_IQR_Rate": np.nanpercentile(rate, 75) - np.nanpercentile(rate, 25)
+                                        }
 
-                                    # ── Diaphragmatic Respiration ────────
+                                        # Additional RSP shape features
+                                        rsp_features = {
+                                            "C_RSP_Amplitude": np.nanmean(amplitude),
+                                            "C_RSP_Amplitude_Slope": compute_slope(amplitude),
+                                            "C_RSP_IQR": np.nanpercentile(clean_signal, 75) - np.nanpercentile(
+                                                clean_signal,
+                                                25),
+                                            "C_RSP_Skewness": pd.Series(clean_signal).skew(),
+                                            "C_RSP_Kurtosis": pd.Series(clean_signal).kurtosis(),
+                                            "C_RSP_Mean_Diff": np.nanmean(np.diff(clean_signal)),
+                                            "C_RSP_ZeroCrossings": ((clean_signal[:-1] * clean_signal[1:]) < 0).sum(),
+                                            "C_RSP_Range": np.nanmax(clean_signal) - np.nanmin(clean_signal),
+                                        }
+
+                                        RSP_df_chest = pd.concat([RSP_df_chest, pd.DataFrame([{
+                                            "ID": ID,
+                                            "Group": Group,
+                                            "Time": center_time,
+                                            **rsp_features,
+                                            **brv_features,
+                                            "Class": cls,
+                                            "Stress": stress,
+                                            "Fatigue": fatigue
+                                        }])], ignore_index=True)
+
                                     elif signal_type == 'Diaphragmatic Respiration':
-                                        rsp_signals, _ = nk.rsp_process(segment, sampling_rate=sample_rate)
-                                        RSP_df_diaph = pd.concat([
-                                            RSP_df_diaph,
-                                            pd.DataFrame([{**{
-                                                'ID': ID,
-                                                'Group': Group,
-                                                'Time': center_time,
-                                                'RSP_Rate'                 : rsp_signals.get('RSP_Rate', [None])[0],
-                                                'RSP_Amplitude'            : rsp_signals.get('RSP_Amplitude', [None])[0],
-                                                'RSP_Symmetry_PeakTrough'  : rsp_signals.get('RSP_Symmetry_PeakTrough', [None])[0],
-                                                'Class': cls,
-                                                'Stress': stress,
-                                                'Fatigue': fatigue
-                                            }}])
-                                        ], ignore_index=True)
+                                        rsp_signals, info = nk.rsp_process(segment, sampling_rate=sample_rate)
+
+                                        clean_signal = rsp_signals["RSP_Clean"].values
+                                        amplitude = rsp_signals["RSP_Amplitude"].values
+                                        rate = rsp_signals["RSP_Rate"].values
+
+                                        brv_features = {
+                                            "D_BRV_MeanRate": np.nanmean(rate),
+                                            "D_BRV_SD_Rate": np.nanstd(rate),
+                                            "D_BRV_CV_Rate": np.nanstd(rate) / np.nanmean(rate) * 100 if np.nanmean(
+                                                rate) > 0 else np.nan,
+                                            "D_BRV_MedianRate": np.nanmedian(rate),
+                                            "D_BRV_IQR_Rate": np.nanpercentile(rate, 75) - np.nanpercentile(rate, 25)
+                                        }
+
+                                        rsp_features = {
+                                            "D_RSP_Amplitude": np.nanmean(amplitude),
+                                            "D_RSP_Amplitude_Slope": compute_slope(amplitude),
+                                            "D_RSP_IQR": np.nanpercentile(clean_signal, 75) - np.nanpercentile(
+                                                clean_signal,
+                                                25),
+                                            "D_RSP_Skewness": pd.Series(clean_signal).skew(),
+                                            "D_RSP_Kurtosis": pd.Series(clean_signal).kurtosis(),
+                                            "D_RSP_Mean_Diff": np.nanmean(np.diff(clean_signal)),
+                                            "D_RSP_ZeroCrossings": ((clean_signal[:-1] * clean_signal[1:]) < 0).sum(),
+                                            "D_RSP_Range": np.nanmax(clean_signal) - np.nanmin(clean_signal),
+                                        }
+
+                                        RSP_df_diaph = pd.concat([RSP_df_diaph, pd.DataFrame([{
+                                            "ID": ID,
+                                            "Group": Group,
+                                            "Time": center_time,
+                                            **rsp_features,
+                                            **brv_features,
+                                            "Class": cls,
+                                            "Stress": stress,
+                                            "Fatigue": fatigue
+                                        }])], ignore_index=True)
+
                                 except Exception as e:
                                     print(f"⛔ Error in window {j} for {signal_type} - ID {ID}: {e}")
+
+                                    # Add row with NaN values when processing fails
+                                    if signal_type == 'ECG':
+                                        # Create HRV features with NaN values
+                                        hrv_features_nan = {
+                                            'HRV_MeanNN': np.nan,
+                                            'HRV_SDNN': np.nan,
+                                            'HRV_RMSSD': np.nan,
+                                            'HRV_pNN50': np.nan,
+                                            'HRV_pNN20': np.nan,
+                                            'HRV_HTI': np.nan,
+                                            'HRV_TINN': np.nan,
+                                            'HRV_LF': np.nan,
+                                            'HRV_HF': np.nan,
+                                            'HRV_LF_HF': np.nan,
+                                            'HRV_LFnu': np.nan,
+                                            'HRV_HFnu': np.nan,
+                                            'HRV_VLF': np.nan,
+                                            'HRV_TP': np.nan,
+                                            'HRV_SD1': np.nan,
+                                            'HRV_SD2': np.nan,
+                                            'HRV_SD1_SD2': np.nan,
+                                            'HRV_CSI': np.nan,
+                                            'HRV_CVI': np.nan,
+                                            'HRV_Modified_CSI': np.nan,
+                                            'HRV_ApEn': np.nan,
+                                            'HRV_SampEn': np.nan,
+                                            'HRV_DFA_alpha1': np.nan,
+                                            'HRV_DFA_alpha2': np.nan
+                                        }
+
+                                        HRV_df = pd.concat([
+                                            HRV_df,
+                                            pd.DataFrame([{
+                                                'ID': ID,
+                                                'Group': Group,
+                                                'Time': center_time,
+                                                **hrv_features_nan,
+                                                'Class': cls,
+                                                'Stress': stress,
+                                                'Fatigue': fatigue
+                                            }])
+                                        ], ignore_index=True)
+
+                                    elif signal_type == 'EDA':
+                                        # Create EDA features with NaN values
+                                        EDA_df = pd.concat([
+                                            EDA_df,
+                                            pd.DataFrame([{
+                                                'ID': ID,
+                                                'Group': Group,
+                                                'Time': center_time,
+                                                'EDA_Tonic_Mean': np.nan,
+                                                'EDA_Tonic_Std': np.nan,
+                                                'EDA_Tonic_Slope': np.nan,
+                                                'EDA_Phasic_Mean': np.nan,
+                                                'EDA_Phasic_Std': np.nan,
+                                                'EDA_Phasic_Slope': np.nan,
+                                                'EDA_Clean_Median': np.nan,
+                                                'EDA_Clean_Slope': np.nan,
+                                                'SCR_Peaks_Count': np.nan,
+                                                'SCR_Amplitude_Mean': np.nan,
+                                                'EDA_Frequency_Power': np.nan,
+                                                'Class': cls,
+                                                'Stress': stress,
+                                                'Fatigue': fatigue
+                                            }])
+                                        ], ignore_index=True)
+
+                                    elif signal_type == 'Chest Respiration':
+                                        # Create RSP and BRV features with NaN values
+                                        brv_features_nan = {
+                                            "C_BRV_MeanRate": np.nan,
+                                            "C_BRV_SD_Rate": np.nan,
+                                            "C_BRV_CV_Rate": np.nan,
+                                            "C_BRV_MedianRate": np.nan,
+                                            "C_BRV_IQR_Rate": np.nan
+                                        }
+
+                                        rsp_features_nan = {
+                                            "C_RSP_Amplitude": np.nan,
+                                            "C_RSP_Amplitude_Slope": np.nan,
+                                            "C_RSP_IQR": np.nan,
+                                            "C_RSP_Skewness": np.nan,
+                                            "C_RSP_Kurtosis": np.nan,
+                                            "C_RSP_Mean_Diff": np.nan,
+                                            "C_RSP_ZeroCrossings": np.nan,
+                                            "C_RSP_Range": np.nan,
+                                        }
+
+                                        RSP_df_chest = pd.concat([RSP_df_chest, pd.DataFrame([{
+                                            "ID": ID,
+                                            "Group": Group,
+                                            "Time": center_time,
+                                            **rsp_features_nan,
+                                            **brv_features_nan,
+                                            "Class": cls,
+                                            "Stress": stress,
+                                            "Fatigue": fatigue
+                                        }])], ignore_index=True)
+
+                                    elif signal_type == 'Diaphragmatic Respiration':
+                                        # Create RSP and BRV features with NaN values
+                                        brv_features_nan = {
+                                            "D_BRV_MeanRate": np.nan,
+                                            "D_BRV_SD_Rate": np.nan,
+                                            "D_BRV_CV_Rate": np.nan,
+                                            "D_BRV_MedianRate": np.nan,
+                                            "D_BRV_IQR_Rate": np.nan
+                                        }
+
+                                        rsp_features_nan = {
+                                            "D_RSP_Amplitude": np.nan,
+                                            "D_RSP_Amplitude_Slope": np.nan,
+                                            "D_RSP_IQR": np.nan,
+                                            "D_RSP_Skewness": np.nan,
+                                            "D_RSP_Kurtosis": np.nan,
+                                            "D_RSP_Mean_Diff": np.nan,
+                                            "D_RSP_ZeroCrossings": np.nan,
+                                            "D_RSP_Range": np.nan,
+                                        }
+
+                                        RSP_df_diaph = pd.concat([RSP_df_diaph, pd.DataFrame([{
+                                            "ID": ID,
+                                            "Group": Group,
+                                            "Time": center_time,
+                                            **rsp_features_nan,
+                                            **brv_features_nan,
+                                            "Class": cls,
+                                            "Stress": stress,
+                                            "Fatigue": fatigue
+                                        }])], ignore_index=True)
 
                         # ── Save participant‑level CSVs ───────────────
                         base_path = fr'{directory}\Features'
                         os.makedirs(base_path, exist_ok=True)
+                        # ── Imputation and cleaning (after processing all windows) ──────────────
+                        HRV_df = impute_features(HRV_df, missing_threshold=0.15)
+                        EDA_df = impute_features(EDA_df, missing_threshold=0.15)
+                        RSP_df_chest = impute_features(RSP_df_chest, missing_threshold=0.15)
+                        RSP_df_diaph = impute_features(RSP_df_diaph, missing_threshold=0.15)
 
-                        if not HRV_df.empty:
+                        if not set(HRV_df.columns) == {'ID', 'Group', 'Time', 'Stress', 'Fatigue','Class'}:
                             p = os.path.join(base_path, 'HRV', f'HRV_{suffix}')
                             os.makedirs(os.path.dirname(p), exist_ok=True)
                             HRV_df.to_csv(p, index=False)
@@ -1995,7 +2405,7 @@ class HumanDataExtraction():
                             total_HRV_dict[(window_size, overlap)] = pd.concat([
                                 total_HRV_dict[(window_size, overlap)], HRV_df])
 
-                        if not EDA_df.empty:
+                        if not set(EDA_df.columns) == {'ID', 'Group', 'Time', 'Stress', 'Fatigue','Class'}:
                             p = os.path.join(base_path, 'EDA', f'EDA_{suffix}')
                             os.makedirs(os.path.dirname(p), exist_ok=True)
                             EDA_df.to_csv(p, index=False)
@@ -2003,7 +2413,7 @@ class HumanDataExtraction():
                             total_EDA_dict[(window_size, overlap)] = pd.concat([
                                 total_EDA_dict[(window_size, overlap)], EDA_df])
 
-                        if not RSP_df_chest.empty:
+                        if not set(RSP_df_chest.columns) == {'ID', 'Group', 'Time', 'Stress', 'Fatigue','Class'}:
                             p = os.path.join(base_path, 'RSP_chest', f'RSP_Chest_{suffix}')
                             os.makedirs(os.path.dirname(p), exist_ok=True)
                             RSP_df_chest.to_csv(p, index=False)
@@ -2011,7 +2421,7 @@ class HumanDataExtraction():
                             total_RSP_chest_dict[(window_size, overlap)] = pd.concat([
                                 total_RSP_chest_dict[(window_size, overlap)], RSP_df_chest])
 
-                        if not RSP_df_diaph.empty:
+                        if not set(RSP_df_diaph.columns) == {'ID', 'Group', 'Time', 'Stress', 'Fatigue','Class'}:
                             p = os.path.join(base_path, 'RSP_diaph', f'RSP_Diaph_{suffix}')
                             os.makedirs(os.path.dirname(p), exist_ok=True)
                             RSP_df_diaph.to_csv(p, index=False)
@@ -2031,10 +2441,36 @@ class HumanDataExtraction():
             rsp_chest_df = total_RSP_chest_dict.get((window_size, overlap), pd.DataFrame())
             rsp_diaph_df = total_RSP_diaph_dict.get((window_size, overlap), pd.DataFrame())
 
-            # Merge all on Time, ID, Group
-            merged_df = hrv_df.merge(eda_df, on=["Time", "ID", "Group"], how="outer")
-            merged_df = merged_df.merge(rsp_chest_df, on=["Time", "ID", "Group"], how="outer")
-            merged_df = merged_df.merge(rsp_diaph_df, on=["Time", "ID", "Group"], how="outer")
+            merge_keys = ["Time", "ID", "Group"]
+            merged_df = pd.DataFrame()
+
+            try:
+                if not hrv_df.empty:
+                    merged_df = hrv_df.copy()
+
+                if not eda_df.empty:
+                    if merged_df.empty:
+                        merged_df = eda_df.copy()
+                    else:
+                        drop_cols = [col for col in eda_df.columns if
+                                     col in merged_df.columns and col not in merge_keys]
+                        eda_clean = eda_df.drop(columns=drop_cols, errors='ignore')
+                        merged_df = merged_df.merge(eda_clean, on=merge_keys, how="outer")
+
+                if not rsp_chest_df.empty:
+                    drop_cols = [col for col in rsp_chest_df.columns if
+                                 col in merged_df.columns and col not in merge_keys]
+                    rsp_chest_clean = rsp_chest_df.drop(columns=drop_cols, errors='ignore')
+                    merged_df = merged_df.merge(rsp_chest_clean, on=merge_keys, how="outer")
+
+                if not rsp_diaph_df.empty:
+                    drop_cols = [col for col in rsp_diaph_df.columns if
+                                 col in merged_df.columns and col not in merge_keys]
+                    rsp_diaph_clean = rsp_diaph_df.drop(columns=drop_cols, errors='ignore')
+                    merged_df = merged_df.merge(rsp_diaph_clean, on=merge_keys, how="outer")
+
+            except Exception as e:
+                print(f"❌ Merge failed: {e}")
 
             # Optional: drop duplicated columns or reorder if needed
             merged_df.to_csv(os.path.join(
