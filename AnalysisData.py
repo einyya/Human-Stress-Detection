@@ -290,8 +290,8 @@ class AnalysisData():
         participants_csv = os.path.join(self.path, 'Participants', 'participation management.csv')
         participants = pd.read_csv(participants_csv)
         all_ids = participants['code'].dropna().astype(int).unique()
-
-        for signal in ['RSP_Chest', 'RSP_Diaph','HRV', 'EDA', 'All']:
+        for signal in ['All']:
+        # for signal in ['RSP_Chest', 'RSP_Diaph','HRV', 'EDA', 'All']:
             print(f"\n📊 Evaluating signal: {signal}")
             results = []
             importances = {name: [] for name in base_models}
@@ -311,8 +311,10 @@ class AnalysisData():
                 if 2 in iter_to_run:
                     for ws in window_sizes:
                         for ov in overlaps:
-                            file_path = fr'{self.path}\Participants\Dataset\Dataset_{signal}_window{ws}s_{int(ov * 100)}.csv' if signal != 'All' \
-                                else f"Dataset_window{ws}s_{int(ov * 100)}.csv"
+                            if signal == 'All':
+                                file_path = fr'{self.path}\Participants\Dataset\Dataset_{ws}s_{int(ov * 100)}.csv'
+                            else:
+                                file_path = fr'{self.path}\Participants\Dataset\Dataset_{signal}_window{ws}s_{int(ov * 100)}.csv'
                             if not os.path.exists(file_path):
                                 continue
 
@@ -346,7 +348,10 @@ class AnalysisData():
                     for name, base_model in base_models.items():
                         ws = best_ws[name]['window']
                         ov = best_ws[name]['overlap']
-                        file_path = fr'{self.path}\Participants\Dataset\Dataset_{signal}_window{ws}s_{int(ov * 100)}.csv'
+                        if signal == 'All':
+                            file_path = fr'{self.path}\Participants\Dataset\Dataset_{ws}s_{int(ov * 100)}.csv'
+                        else:
+                            file_path = fr'{self.path}\Participants\Dataset\Dataset_{signal}_window{ws}s_{int(ov * 100)}.csv'
                         df = pd.read_csv(file_path).dropna().reset_index(drop=True)
                         df_train = df[df['ID'].isin(train_ids)]
                         feature_cols = [c for c in df.columns if c not in ['Time', 'ID', 'Group', 'Class', 'Stress', 'Fatigue']]
@@ -372,7 +377,7 @@ class AnalysisData():
                     if ws is None or ov is None:
                         continue
                     if signal=='All' :
-                        file_path = fr'{self.path}\Participants\Dataset\Dataset_window{ws}s_{int(ov * 100)}.csv'
+                        file_path = fr'{self.path}\Participants\Dataset\Dataset_{ws}s_{int(ov * 100)}.csv'
                     else:
                         file_path = fr'{self.path}\Participants\Dataset\Dataset_{signal}_window{ws}s_{int(ov * 100)}.csv'
                     df = pd.read_csv(file_path).dropna().reset_index(drop=True)
@@ -431,7 +436,7 @@ class AnalysisData():
                 ['mean', 'std']).round(3)
 
             # Get first row per model (or use .mode().iloc[0] if you want most frequent)
-            optimal_settings = results_df.groupby('Model')[['Window(s)','Overlap (%)']].first()
+            optimal_settings = results_df.groupby('Model')[['Window (s)', 'Overlap (%)','param_max_depth','param_min_samples_split','param_n_estimators','param_learning_rate']].first()
 
             # Combine metrics and optimal settings
             summary = pd.concat([summary_metrics, optimal_settings], axis=1)

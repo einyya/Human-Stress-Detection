@@ -7,7 +7,7 @@ from AnalysisData import AnalysisData
 if __name__ == '__main__':
     DataPath = r'C:\Users\e3bom\Desktop\Human Bio Signals Analysis'
     Make_Trigger=False
-    Make_DataSet=True
+    Make_DataSet=False
     Analysis_DataSet=True
 
     #________________________________________________________Make Trigger Table_______________________________________________________

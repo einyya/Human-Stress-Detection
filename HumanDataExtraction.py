@@ -2397,7 +2397,15 @@ class HumanDataExtraction():
                         RSP_df_chest = impute_features(RSP_df_chest, missing_threshold=0.15)
                         RSP_df_diaph = impute_features(RSP_df_diaph, missing_threshold=0.15)
 
-                        if not set(HRV_df.columns) == {'ID', 'Group', 'Time', 'Stress', 'Fatigue','Class'}:
+                        if set(HRV_df.columns) == {'ID', 'Group', 'Time', 'Stress', 'Fatigue', 'Class'}:
+                            # Define the CSV file path
+                            p = os.path.join(base_path, 'HRV', f'HRV_{suffix}')
+
+                            # Delete the file if it exists
+                            if os.path.exists(p):
+                                os.remove(p)
+                                print(f"Deleted empty HRV feature file: {p}")
+                        else:
                             p = os.path.join(base_path, 'HRV', f'HRV_{suffix}')
                             os.makedirs(os.path.dirname(p), exist_ok=True)
                             HRV_df.to_csv(p, index=False)
@@ -2405,7 +2413,15 @@ class HumanDataExtraction():
                             total_HRV_dict[(window_size, overlap)] = pd.concat([
                                 total_HRV_dict[(window_size, overlap)], HRV_df])
 
-                        if not set(EDA_df.columns) == {'ID', 'Group', 'Time', 'Stress', 'Fatigue','Class'}:
+                        if set(EDA_df.columns) == {'ID', 'Group', 'Time', 'Stress', 'Fatigue', 'Class'}:
+                                # Define the CSV file path
+                                p = os.path.join(base_path, 'EDA', f'EDA_{suffix}')
+
+                                # Delete the file if it exists
+                                if os.path.exists(p):
+                                    os.remove(p)
+                                    print(f"Deleted empty HRV feature file: {p}")
+                        else:
                             p = os.path.join(base_path, 'EDA', f'EDA_{suffix}')
                             os.makedirs(os.path.dirname(p), exist_ok=True)
                             EDA_df.to_csv(p, index=False)
@@ -2413,15 +2429,30 @@ class HumanDataExtraction():
                             total_EDA_dict[(window_size, overlap)] = pd.concat([
                                 total_EDA_dict[(window_size, overlap)], EDA_df])
 
-                        if not set(RSP_df_chest.columns) == {'ID', 'Group', 'Time', 'Stress', 'Fatigue','Class'}:
+                        if set(RSP_df_chest.columns) == {'ID', 'Group', 'Time', 'Stress', 'Fatigue', 'Class'}:
+                                # Define the CSV file path
+                                p = os.path.join(base_path, 'RSP_chest', f'RSP_Chest_{suffix}')
+
+                                # Delete the file if it exists
+                                if os.path.exists(p):
+                                    os.remove(p)
+                                    print(f"Deleted empty HRV feature file: {p}")
+                        else:
                             p = os.path.join(base_path, 'RSP_chest', f'RSP_Chest_{suffix}')
                             os.makedirs(os.path.dirname(p), exist_ok=True)
                             RSP_df_chest.to_csv(p, index=False)
                             total_RSP_chest_dict.setdefault((window_size, overlap), pd.DataFrame())
                             total_RSP_chest_dict[(window_size, overlap)] = pd.concat([
                                 total_RSP_chest_dict[(window_size, overlap)], RSP_df_chest])
+                        if set(RSP_df_diaph.columns) == {'ID', 'Group', 'Time', 'Stress', 'Fatigue', 'Class'}:
+                                # Define the CSV file path
+                                p = os.path.join(base_path, 'RSP_diaph', f'RSP_Diaph_{suffix}')
 
-                        if not set(RSP_df_diaph.columns) == {'ID', 'Group', 'Time', 'Stress', 'Fatigue','Class'}:
+                                # Delete the file if it exists
+                                if os.path.exists(p):
+                                    os.remove(p)
+                                    print(f"Deleted empty HRV feature file: {p}")
+                        else:
                             p = os.path.join(base_path, 'RSP_diaph', f'RSP_Diaph_{suffix}')
                             os.makedirs(os.path.dirname(p), exist_ok=True)
                             RSP_df_diaph.to_csv(p, index=False)
@@ -2435,46 +2466,85 @@ class HumanDataExtraction():
                 print(f"❌ Error processing P_{ID}: {e}")
 
         # ── Save combined datasets ─────────────────────────
-        for (window_size, overlap) in total_HRV_dict.keys():
-            hrv_df = total_HRV_dict.get((window_size, overlap), pd.DataFrame())
-            eda_df = total_EDA_dict.get((window_size, overlap), pd.DataFrame())
-            rsp_chest_df = total_RSP_chest_dict.get((window_size, overlap), pd.DataFrame())
-            rsp_diaph_df = total_RSP_diaph_dict.get((window_size, overlap), pd.DataFrame())
+        for window_size in window_sizes:
+            for overlap in overlaps:
+                suffix = f'window{window_size}s_{int(overlap * 100)}.csv'
 
-            merge_keys = ["Time", "ID", "Group"]
-            merged_df = pd.DataFrame()
+                hrv_df = total_HRV_dict.get((window_size, overlap), pd.DataFrame())
+                hrv_path = fr'{self.path}\Participants\Dataset\Dataset_HRV_{suffix}'
+                hrv_df.to_csv(hrv_path, index=False)
 
-            try:
-                if not hrv_df.empty:
-                    merged_df = hrv_df.copy()
+                eda_df = total_EDA_dict.get((window_size, overlap), pd.DataFrame())
+                eda_path = fr'{self.path}\Participants\Dataset\Dataset_EDA_{suffix}'
+                eda_df.to_csv(eda_path, index=False)
 
-                if not eda_df.empty:
-                    if merged_df.empty:
-                        merged_df = eda_df.copy()
-                    else:
-                        drop_cols = [col for col in eda_df.columns if
-                                     col in merged_df.columns and col not in merge_keys]
-                        eda_clean = eda_df.drop(columns=drop_cols, errors='ignore')
-                        merged_df = merged_df.merge(eda_clean, on=merge_keys, how="outer")
+                rsp_chest_df = total_RSP_chest_dict.get((window_size, overlap), pd.DataFrame())
+                rsp_c_path = fr'{self.path}\Participants\Dataset\Dataset_RSP_C_{suffix}'
+                rsp_chest_df.to_csv(rsp_c_path, index=False)
 
-                if not rsp_chest_df.empty:
-                    drop_cols = [col for col in rsp_chest_df.columns if
-                                 col in merged_df.columns and col not in merge_keys]
-                    rsp_chest_clean = rsp_chest_df.drop(columns=drop_cols, errors='ignore')
-                    merged_df = merged_df.merge(rsp_chest_clean, on=merge_keys, how="outer")
+                rsp_diaph_df = total_RSP_diaph_dict.get((window_size, overlap), pd.DataFrame())
+                rsp_d_path = fr'{self.path}\Participants\Dataset\Dataset_RSP_D_{suffix}'
+                rsp_diaph_df.to_csv(rsp_d_path, index=False)
 
-                if not rsp_diaph_df.empty:
-                    drop_cols = [col for col in rsp_diaph_df.columns if
-                                 col in merged_df.columns and col not in merge_keys]
-                    rsp_diaph_clean = rsp_diaph_df.drop(columns=drop_cols, errors='ignore')
-                    merged_df = merged_df.merge(rsp_diaph_clean, on=merge_keys, how="outer")
+                merge_keys = ["Time", "ID", "Group"]
+                merged_df = pd.DataFrame()
 
-            except Exception as e:
-                print(f"❌ Merge failed: {e}")
+                try:
+                    if not hrv_df.empty:
+                        merged_df = hrv_df.copy()
 
-            # Optional: drop duplicated columns or reorder if needed
-            merged_df.to_csv(os.path.join(
-                total_dataset_dir,
-                f'Dataset_{window_size}s_{int(overlap * 100)}.csv'
-            ), index=False)
+                    if not eda_df.empty:
+                        if merged_df.empty:
+                            merged_df = eda_df.copy()
+                        else:
+                            drop_cols = [col for col in eda_df.columns if
+                                         col in merged_df.columns and col not in merge_keys]
+                            eda_clean = eda_df.drop(columns=drop_cols, errors='ignore')
+                            merged_df = merged_df.merge(eda_clean, on=merge_keys, how="outer")
+
+                    if not rsp_chest_df.empty:
+                        if merged_df.empty:
+                            merged_df = rsp_chest_df.copy()
+                        else:
+                            drop_cols = [col for col in rsp_chest_df.columns if
+                                         col in merged_df.columns and col not in merge_keys]
+                            rsp_chest_clean = rsp_chest_df.drop(columns=drop_cols, errors='ignore')
+                            merged_df = merged_df.merge(rsp_chest_clean, on=merge_keys, how="outer")
+
+                    if not rsp_diaph_df.empty:
+                        if merged_df.empty:
+                            merged_df = rsp_diaph_df.copy()
+                        else:
+                            drop_cols = [col for col in rsp_diaph_df.columns if
+                                         col in merged_df.columns and col not in merge_keys]
+                            rsp_diaph_clean = rsp_diaph_df.drop(columns=drop_cols, errors='ignore')
+                            merged_df = merged_df.merge(rsp_diaph_clean, on=merge_keys, how="outer")
+                    # Columns to move right after 'Time'
+                    cols_to_move = ['Class', 'Fatigue', 'Stress']
+
+                    # Get the current list of all columns
+                    cols = list(merged_df.columns)
+
+                    # Find the index of the 'Time' column
+                    time_idx = cols.index('Time')
+
+                    # Remove the target columns from their current position
+                    for col in cols_to_move:
+                        cols.remove(col)
+
+                    # Insert the columns right after 'Time', preserving order
+                    for i, col in enumerate(cols_to_move):
+                        cols.insert(time_idx + 1 + i, col)
+
+                    # Reorder the DataFrame with the new column order
+                    merged_df = merged_df[cols]
+
+                except Exception as e:
+                    print(f"❌ Merge failed: {e}")
+
+                # Optional: drop duplicated columns or reorder if needed
+                merged_df.to_csv(os.path.join(
+                    total_dataset_dir,
+                    f'Dataset_{window_size}s_{int(overlap * 100)}.csv'
+                ), index=False)
 
