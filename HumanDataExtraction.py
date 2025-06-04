@@ -1745,6 +1745,7 @@ class HumanDataExtraction():
         # window_sizes = [60]  # sec
         # overlaps = [0.0,]
         # fraction
+        print(window_sizes)
         total_dataset_dir = r'C:\Users\e3bom\Desktop\Human Bio Signals Analysis\Participants\Dataset'
         os.makedirs(total_dataset_dir, exist_ok=True)
 
