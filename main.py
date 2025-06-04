@@ -5,7 +5,8 @@ from AnalysisData import AnalysisData
 
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
-    DataPath = r'C:\Users\e3bom\Desktop\Human Bio Signals Analysis'
+    #DataPath = r'C:\Users\97254\OneDrive\Desktop\Human Bio Signals Analysis'
+    DataPath = r'C:\Users\e3bomb\Desktop\Human Bio Signals Analysis'
     Make_Trigger=False
     Make_DataSet=False
     Analysis_DataSet=True

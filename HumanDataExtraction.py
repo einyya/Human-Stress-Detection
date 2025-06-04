@@ -1589,29 +1589,8 @@ class HumanDataExtraction():
 
             BioPac_path = fr'{directory}\P_{ID}.acq'
             BioPac = bioread.read_file(BioPac_path)
-            sample_rate = BioPac.named_channels['Chest Respiration'].samples_per_second
-            if Group.lower() == 'control':
-                task_pattern = r'break2|PA_easy|PA_medium|PA_hard|break3'
-            elif Group.lower() == 'music':
-                task_pattern = r'music2|PA_easy|PA_medium|PA_hard|music3'
-            elif Group.lower() == 'breath':
-                task_pattern = r'breath2|PA_easy|PA_medium|PA_hard|breath3'
-            else:
-                task_pattern = r''  # fallback if needed
 
-            mask = Trigger_df['Task'].str.contains(task_pattern, case=False, na=False)
-            filtered_df = Trigger_df[mask].reset_index(drop=True)            # mask = Trigger_df['Task'].str.contains(r'breath ?[1-4]|star', case=False, na=False)
-            Itterations=[0,1,2,3,4]
-            # fig, ax = plt.subplots(3, figsize=(10, 14))
-            for i in Itterations:
-                start=int(filtered_df.iloc[i]['Start']*sample_rate)
-                end=int(filtered_df.iloc[i]['End']*sample_rate)
-                part_data = BioPac.named_channels['Chest Respiration'].data[start:end]
-                part_time=BioPac.named_channels['Chest Respiration'].time_index[start:end]
-                plt.plot(part_time,part_data)
-                # ax[i].plot(part_time,part_data)
-            plt.savefig(fr'{directory_Breath}\breath')
-            plt.show()
+
     def HRV_Window_Feature_all(self):
             window_sizes = [5, 10, 30, 60]  # seconds
             overlaps = [0.0, 0.5]  # no overlap and 50%
