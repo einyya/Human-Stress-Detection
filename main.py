@@ -6,15 +6,16 @@ from AnalysisData import AnalysisData
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
     #DataPath = r'C:\Users\97254\OneDrive\Desktop\Human Bio Signals Analysis'
-    DataPath = r'C:\Users\e3bomb\Desktop\Human Bio Signals Analysis'
-    Make_Trigger=False
+    DataPath = r'C:\Users\e3bom\Desktop\Human Bio Signals Analysis'
+    Make_Trigger=True
     Make_DataSet=False
     Analysis_DataSet=True
 
     #________________________________________________________Make Trigger Table_______________________________________________________
     if Make_Trigger:
         hdp = HumanDataPebl(DataPath)
-        hdp.Make_Trigger_Table(ID=42,rangeID=True)
+        hdp.Make_Trigger_Table(ID=None,rangeID=True)
+        hdp.CreateDataset_StressScore(ID=None,rangeID=True)
     #________________________________________________________SortData_______________________________________________________
     if Make_DataSet:
 
@@ -31,7 +32,7 @@ if __name__ == '__main__':
             hde.Check_MinMaxVlaue(ID=None,rangeID=False)
 
         if Dataset:
-            # hde.CleanData(ID=42,rangeID=True)
+            hde.CleanData(ID=42,rangeID=True)
             hde.CreateDataset(ID=None,rangeID=False)
 
         if Combine:
@@ -54,4 +55,5 @@ if __name__ == '__main__':
     #________________________________________________________SortData_______________________________________________________
     if Analysis_DataSet:
         ad = AnalysisData(DataPath)
-        ad.ML_models_all()
+        # ad.ML_models_all()
+        ad.GroupDiff()

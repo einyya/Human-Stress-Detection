@@ -21,6 +21,7 @@ from sklearn.metrics import (accuracy_score, precision_score,
 from sklearn.linear_model import LogisticRegression, LinearRegression
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.tree import DecisionTreeRegressor
+from sklearn.base import clone
 
 class AnalysisData():
     def __init__(self,Directory):
@@ -290,8 +291,8 @@ class AnalysisData():
         participants_csv = os.path.join(self.path, 'Participants', 'participation management.csv')
         participants = pd.read_csv(participants_csv)
         all_ids = participants['code'].dropna().astype(int).unique()
-        for signal in ['All']:
-        # for signal in ['RSP_Chest', 'RSP_Diaph','HRV', 'EDA', 'All']:
+        # for signal in ['HRV']:
+        for signal in ['HRV','RSP_Chest', 'RSP_Diaph', 'EDA', 'All']:
             print(f"\n📊 Evaluating signal: {signal}")
             results = []
             importances = {name: [] for name in base_models}
@@ -333,7 +334,7 @@ class AnalysisData():
                                         y_tr = y.iloc[tr_idx]
                                         X_val = df_train.iloc[val_idx][feature_cols]
                                         y_val = y.iloc[val_idx]
-
+                                        model = clone(base_models[name])  # ← add this here before .fit
                                         model.fit(X_tr, y_tr)
                                         y_pred = model.predict(X_val)
                                         f1_scores.append(f1_score(y_val, y_pred, zero_division=0))
@@ -385,6 +386,7 @@ class AnalysisData():
                     df_train = df[df['ID'].isin(train_ids)]
                     feature_cols = [c for c in df.columns if c not in ['Time', 'ID', 'Group', 'Class', 'Stress', 'Fatigue']]
                     y = df_train['Class'].map({'test': 1, 'music': 0, 'breath': 0, 'natural': 0})
+                    model = clone(base_models[name])
                     model = base_models[name].set_params(**best_params[name])
                     model.fit(df_train[feature_cols], y)
                     params = best_params[name]
@@ -401,10 +403,10 @@ class AnalysisData():
                         'Model': name,
                         'Window (s)': ws,
                         'Overlap (%)': int(ov * 100),
-                        'Accuracy': accuracy_score(y_te, y_pred),
-                        'Precision': precision_score(y_te, y_pred, zero_division=0),
-                        'Recall': recall_score(y_te, y_pred, zero_division=0),
-                        'F1': f1_score(y_te, y_pred, zero_division=0)
+                        'Accuracy': accuracy_score(y_te, y_pred)*100,
+                        'Precision': precision_score(y_te, y_pred, zero_division=0)*100,
+                        'Recall': recall_score(y_te, y_pred, zero_division=0)*100,
+                        'F1': f1_score(y_te, y_pred, zero_division=0)*100
                     }
                     result_row.update({f'param_{k}': v for k, v in params.items()})
                     results.append(result_row)
@@ -425,6 +427,7 @@ class AnalysisData():
 
             # Save per-signal results
             results_df = pd.DataFrame(results)
+            results_df=results_df.round(2)
             out_dir = os.path.join(self.path, 'Participants', 'Dataset', 'ML')
             os.makedirs(out_dir, exist_ok=True)
             results_df.to_csv(os.path.join(out_dir, f'NestedCV_Results_{signal}.csv'), index=False)
@@ -433,10 +436,11 @@ class AnalysisData():
             # Aggregate stats per model
             # Summary metrics per model
             summary_metrics = results_df.groupby('Model')[['Accuracy', 'Precision', 'Recall', 'F1']].agg(
-                ['mean', 'std']).round(3)
+                ['mean', 'std']).round(2)
 
             # Get first row per model (or use .mode().iloc[0] if you want most frequent)
-            optimal_settings = results_df.groupby('Model')[['Window (s)', 'Overlap (%)','param_max_depth','param_min_samples_split','param_n_estimators','param_learning_rate']].first()
+            # optimal_settings = results_df.groupby('Model')[['Window (s)', 'Overlap (%)','param_max_depth','param_min_samples_split','param_n_estimators','param_learning_rate']].first()
+            optimal_settings = results_df.groupby('Model')[['Window (s)', 'Overlap (%)']].first()
 
             # Combine metrics and optimal settings
             summary = pd.concat([summary_metrics, optimal_settings], axis=1)
@@ -739,7 +743,35 @@ class AnalysisData():
 
         # Print the model summary
         print(result.summary())
+    def GroupDiff(self):
+        SubjectData_path = fr'{self.path}\Participants\Dataset\Subjective\SubjectiveDataset.csv'
+        SubjectDat = pd.read_csv(SubjectData_path)
 
+        # המרת המשימות למחרוזות והסרת רווחים מיותרים
+        SubjectDat['Task'] = SubjectDat['Task'].astype(str).str.strip()
+
+        # סדר מותאם של משימות לפי הופעתן בפועל (נמנע ממשימות ריקות או מספרים)
+        task_order = SubjectDat['Task'].dropna().unique().tolist()
+
+        # הגדרה כקטגוריה עם סדר נכון
+        SubjectDat['Task'] = pd.Categorical(SubjectDat['Task'], categories=task_order, ordered=True)
+
+        # ציור Boxplot עם שמות ולא מספרים
+        plt.figure(figsize=(14, 6))
+        ax = sns.boxplot(
+            data=SubjectDat,
+            x="Task",
+            y="Stress",
+            hue="Group",
+            palette="Set1"
+        )
+        ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
+        plt.title("Stress Ratings per Task by Group (Boxplot)")
+        plt.xlabel("Cognitive Task")
+        plt.ylabel("Stress Rating")
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
 
 
 

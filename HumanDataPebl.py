@@ -5,13 +5,64 @@ import os
 import bioread
 import re
 import datetime
-
+import numpy as np
 
 # Press the green button in the gutter to run the script.
 class HumanDataPebl():
     def __init__(self,Directory):
         self.path=Directory
         self.parlist_df=pd.DataFrame()
+    def CreateDataset_StressScore(self,ID,rangeID):
+        SubjectiveDataset_path=fr'{self.path}\Participants\Dataset\Subjective\SubjectiveDataset.csv'
+        participants_path = f'{self.path}\\Participants\\participation management.csv'
+        Participants_df=pd.read_csv(participants_path)
+        Participants_df['code'] = pd.to_numeric(Participants_df['code'], errors='coerce').astype('Int64')
+        if ID is not None:
+            if rangeID:
+                Participants_df = Participants_df[Participants_df['code'] >= ID]
+            else:
+                Participants_df = Participants_df[Participants_df['code'] == ID]
+        Total_Trigger=pd.DataFrame()
+        for _,row in Participants_df.iterrows():
+            ID    = row['code']
+            Group = row['Group']
+            directory = fr'{self.path}\Participants\{Group}_group\P_{ID}'
+            Trigger_df = pd.read_csv(fr'{directory}\Trigger_{ID}.csv')
+            # ── Ratings table: keep only rows that actually carry stress / fatigue values ──
+            # create two new columns, NaN everywhere except the correct VAS rows
+
+            Trigger_df["Stress"] = np.where(Trigger_df["Task"] == "VAS_Stress",
+                                            Trigger_df["Score"],
+                                            np.nan)
+
+            Trigger_df["Fatigue"] = np.where(Trigger_df["Task"] == "VAS_Fatigue",
+                                             Trigger_df["Score"],
+                                             np.nan)
+
+            Trigger_F=Trigger_df["Fatigue"].dropna().reset_index()
+            Trigger_S=Trigger_df["Stress"].dropna().reset_index()
+            Trigger_df = Trigger_df[Trigger_df['Task'] != 'VAS_Stress']
+            Trigger_df = Trigger_df[Trigger_df['Task'] != 'VAS_Fatigue']
+            Trigger_df = Trigger_df.drop(columns=['Score','End','Start']).reset_index(drop=True)
+            Trigger_df['Stress']=Trigger_S['Stress']
+            Trigger_df['Stress'] = (Trigger_S['Stress'] - Trigger_S['Stress'].mean()) / Trigger_S['Stress'].std()
+            Trigger_df['Fatigue']=Trigger_F['Fatigue']
+            Trigger_df['Stress'] = (Trigger_S['Stress'] - Trigger_S['Stress'].mean()) / Trigger_S['Stress'].std()
+            Trigger_df['Group']=Group
+            Trigger_df.at[0,'Task']='Start'
+            Trigger_df['Task'] = Trigger_df['Task'].replace({
+                'Music1': 'Break1',
+                'Music2': 'Break2',
+                'Music3': 'Break3',
+                'Music4': 'Break4',
+                'Breath1': 'Break1',
+                'Breath2': 'Break2',
+                'Breath3': 'Break3',
+                'Breath4': 'Break4',
+                'Baseline': 'Break1'
+            })
+            Total_Trigger=pd.concat([Trigger_df,Total_Trigger])
+        Total_Trigger.to_csv(SubjectiveDataset_path)
     def structure_data(self,df):
         """
         Function to structure task data from raw dataframe.
@@ -31,7 +82,14 @@ class HumanDataPebl():
             part = row["Part"]
             sub = row["Sub"]
             time = row["Time"]
-
+            Participants_path = f'{self.path}\\Participants\\participation management.csv'
+            Participants_df = (
+                pd.read_csv(Participants_path)
+                .dropna(axis=1, how='all')
+                .dropna(subset=['participant', 'Date', 'departmant'], how='all')
+            )
+            Participants_df['code'] = pd.to_numeric(Participants_df['code'], errors='coerce').astype('Int64')
+            Participants_df = Participants_df[Participants_df['code'] == sub]
             if "Start_" in part or "STARTED" in part:
                 task_name = part.replace("Start_", "").replace("PASAT_STARTED ", "PASAT ").replace("TWOCOL_STARTED ", "TWOCOL ")
                 start_times[(sub, task_name)] = time
@@ -187,6 +245,27 @@ class HumanDataPebl():
             combined_ID["End"] = pd.to_datetime(combined_ID["End"], format="%H:%M:%S", errors='coerce').dt.time
             combined_ID["Start"] = combined_ID["Start"].apply(lambda x: (pd.to_datetime(str(x), format="%H:%M:%S") - pd.to_datetime(str(biopac_time), format="%H:%M:%S")).total_seconds())
             combined_ID["End"] = combined_ID["End"].apply(lambda x: (pd.to_datetime(str(x), format="%H:%M:%S") - pd.to_datetime(str(biopac_time), format="%H:%M:%S")).total_seconds())
+            if Group == 'control':
+                if ID==47:
+                    combined_ID.loc[2, 'Task'] = 'Break1'
+                    combined_ID.loc[12, 'Task'] = 'Break2'
+                    combined_ID.loc[23, 'Task'] = 'Break3'
+                    combined_ID.loc[33, 'Task'] = 'Break4'
+                elif ID == 32:
+                    combined_ID.loc[3, 'Task'] = 'Break1'
+                    combined_ID.loc[12, 'Task'] = 'Break2'
+                    combined_ID.loc[23, 'Task'] = 'Break3'
+                    combined_ID.loc[33, 'Task'] = 'Break4'
+                elif ID == 34:
+                    combined_ID.loc[3, 'Task'] = 'Break1'
+                    combined_ID.loc[12, 'Task'] = 'Break2'
+                    combined_ID.loc[23, 'Task'] = 'Break3'
+                    combined_ID.loc[32, 'Task'] = 'Break4'
+                else:
+                    combined_ID.loc[3, 'Task'] = 'Break1'
+                    combined_ID.loc[12, 'Task'] = 'Break2'
+                    combined_ID.loc[24, 'Task'] = 'Break3'
+                    combined_ID.loc[33, 'Task'] = 'Break4'
             combined_ID.to_csv(participant_Trigger, index=False)
 
         else:

@@ -1737,7 +1737,8 @@ class HumanDataExtraction():
                     plt.title('HRV_CVNN vs HRV_RMSSD by Class')
                     plt.savefig(fr'{time_window_plot_dir}\Scatter_{window_size}_{overlap}.png')
                     plt.show()
-    def CreateDataset(self, ID,rangeID):
+
+    def CreateDataset(self,ID,rangeID):
         """Build time‑windowed feature datasets and add Stress, Fatigue,
         and FromTrigger columns drawn from the participant's Trigger CSV."""
 
@@ -1747,8 +1748,7 @@ class HumanDataExtraction():
         # window_sizes = [60]  # sec
         # overlaps = [0.0,]
         # fraction
-        print(window_sizes)
-        total_dataset_dir = r'C:\Users\e3bom\Desktop\Human Bio Signals Analysis\Participants\Dataset'
+        total_dataset_dir = fr'{self.path}\Participants\Dataset'
         os.makedirs(total_dataset_dir, exist_ok=True)
 
         # ── Participant table ───────────────────────────────
