@@ -7,13 +7,14 @@ from AnalysisData import AnalysisData
 if __name__ == '__main__':
     #DataPath = r'C:\Users\97254\OneDrive\Desktop\Human Bio Signals Analysis'
     DataPath = r'C:\Users\e3bom\Desktop\Human Bio Signals Analysis'
-    Make_Trigger=True
+    Make_Trigger=False
     Make_DataSet=False
     Analysis_DataSet=True
 
     #________________________________________________________Make Trigger Table_______________________________________________________
     if Make_Trigger:
         hdp = HumanDataPebl(DataPath)
+        hdp.CreateDataset_PerformanceScore(ID=None,rangeID=False)
         hdp.Make_Trigger_Table(ID=None,rangeID=True)
         hdp.CreateDataset_StressScore(ID=None,rangeID=True)
     #________________________________________________________SortData_______________________________________________________
@@ -32,7 +33,7 @@ if __name__ == '__main__':
             hde.Check_MinMaxVlaue(ID=None,rangeID=False)
 
         if Dataset:
-            hde.CleanData(ID=42,rangeID=True)
+            # hde.CleanData(ID=42,rangeID=True)
             hde.CreateDataset(ID=None,rangeID=False)
 
         if Combine:
@@ -55,5 +56,6 @@ if __name__ == '__main__':
     #________________________________________________________SortData_______________________________________________________
     if Analysis_DataSet:
         ad = AnalysisData(DataPath)
-        # ad.ML_models_all()
-        ad.GroupDiff()
+        ad.ML_models_Classification()
+        # ad.ML_models_Prediction()
+        # ad.GroupDiff()

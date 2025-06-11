@@ -1789,12 +1789,15 @@ class HumanDataExtraction():
                 Trigger_df["Fatigue"] = np.where(Trigger_df["Task"] == "VAS_Fatigue",
                                                  Trigger_df["Score"],
                                                  np.nan)
-
                 # now your original line works
                 rating_df = (Trigger_df[(~Trigger_df["Stress"].isna()) | (~Trigger_df["Fatigue"].isna())]
                              .sort_values("Start")
                              .reset_index(drop=True))
                 rating_df = rating_df.drop(columns=['Score', 'End'])  # ← preferred, explicit
+                Trigger_df = pd.read_csv(fr'{directory}\Trigger_{ID}.csv')
+                relevant_tasks = ['Task', 'CB_easy', 'CB_hard', 'PA_easy', 'PA_medium', 'PA_hard', 'TC_easy', 'TC_hard']
+                Performance_df = Trigger_df[Trigger_df['Task'].isin(relevant_tasks)]
+                Performance_df.drop(columns=['Score'])
                 BioPac= bioread.read_file(fr'{directory}\P_{ID}.acq')
                 sample_rate = BioPac.named_channels['ECG'].samples_per_second
 
@@ -1812,7 +1815,7 @@ class HumanDataExtraction():
                         df = df.copy()
 
                         # Define columns that are not included in the imputation process
-                        excluded_columns = ['ID', 'Group', 'Time', 'Stress', 'Fatigue', 'Class']
+                        excluded_columns = ['ID', 'Group', 'Time', 'Stress', 'Fatigue', 'Class','Accuracy','RT']
                         numeric_cols = [col for col in df.columns if col not in excluded_columns]
 
                         if verbose:
@@ -1969,7 +1972,7 @@ class HumanDataExtraction():
                     return None
 
                                 # ── Helper: stress & fatigue  ───────────
-                def trigger_attrs(t):
+                def trigger_attrs(t,Performance_df):
                     """Return Stress, Fatigue and forward gap (Δt) to the **next**
                     VAS rating starting at or after *t*.  Because the experiment
                     begins and ends with a rating there is always such a future
@@ -2000,7 +2003,10 @@ class HumanDataExtraction():
                             tr_f = future_rows.iloc[1]          # first future rating (closest)
                     stress  = tr_s.get("Stress",  np.nan)
                     fatigue = tr_f.get("Fatigue", np.nan)
-                    return stress, fatigue
+                    matching_rows = Performance_df[(Performance_df["Start"] <= t) & (Performance_df["End"] >= t)]
+                    accuracy = matching_rows["Accuracy_Mean"].values
+                    rt = matching_rows["RT_Mean"].values
+                    return stress, fatigue,accuracy,rt
 
                 # ── Helper: HRV calculation ────────────────
                 def calculate_hrv_features(rr_values, interpolate_rr=True, sampling_rate=4):
@@ -2088,7 +2094,7 @@ class HumanDataExtraction():
                             for j, i in enumerate(range(0, len(part_data) - window_samples + 1, step)):
                                 segment= part_data[i:i + window_samples]
                                 center_time  = (i + window_samples / 2) / sample_rate
-                                stress, fatigue = trigger_attrs(center_time)
+                                stress, fatigue,accuracy,RT = trigger_attrs(center_time,Performance_df)
                                 cls = label_window(center_time)
 
                                 try:
@@ -2108,6 +2114,8 @@ class HumanDataExtraction():
                                                         'Time': center_time,
                                                         **hrv_features,
                                                         'Class': cls,
+                                                        'Accuracy':accuracy,
+                                                        'RT':RT,
                                                         'Stress': stress,
                                                         'Fatigue': fatigue
                                                     }}])
@@ -2150,6 +2158,8 @@ class HumanDataExtraction():
                                                 'SCR_Amplitude_Mean': scr_amplitude,
                                                 'EDA_Frequency_Power': eda_freq_power,
                                                 'Class': cls,
+                                                'Accuracy': accuracy,
+                                                'RT': RT,
                                                 'Stress': stress,
                                                 'Fatigue': fatigue
                                             }])
@@ -2191,6 +2201,8 @@ class HumanDataExtraction():
                                             **rsp_features,
                                             **brv_features,
                                             "Class": cls,
+                                            "Accuracy": accuracy,
+                                            "RT": RT,
                                             "Stress": stress,
                                             "Fatigue": fatigue
                                         }])], ignore_index=True)
@@ -2231,6 +2243,8 @@ class HumanDataExtraction():
                                             **rsp_features,
                                             **brv_features,
                                             "Class": cls,
+                                            "Accuracy": accuracy,
+                                            "RT": RT,
                                             "Stress": stress,
                                             "Fatigue": fatigue
                                         }])], ignore_index=True)
@@ -2276,6 +2290,8 @@ class HumanDataExtraction():
                                                 'Time': center_time,
                                                 **hrv_features_nan,
                                                 'Class': cls,
+                                                'Accuracy': accuracy,
+                                                'RT': RT,
                                                 'Stress': stress,
                                                 'Fatigue': fatigue
                                             }])
@@ -2334,6 +2350,8 @@ class HumanDataExtraction():
                                             **rsp_features_nan,
                                             **brv_features_nan,
                                             "Class": cls,
+                                            "Accuracy": accuracy,
+                                            "RT": RT,
                                             "Stress": stress,
                                             "Fatigue": fatigue
                                         }])], ignore_index=True)
@@ -2366,6 +2384,8 @@ class HumanDataExtraction():
                                             **rsp_features_nan,
                                             **brv_features_nan,
                                             "Class": cls,
+                                            "Accuracy": accuracy,
+                                            "RT": RT,
                                             "Stress": stress,
                                             "Fatigue": fatigue
                                         }])], ignore_index=True)
@@ -2379,7 +2399,7 @@ class HumanDataExtraction():
                         RSP_df_chest = impute_features(RSP_df_chest, missing_threshold=0.15)
                         RSP_df_diaph = impute_features(RSP_df_diaph, missing_threshold=0.15)
 
-                        if set(HRV_df.columns) == {'ID', 'Group', 'Time', 'Stress', 'Fatigue', 'Class'}:
+                        if set(HRV_df.columns) == {'ID', 'Group', 'Time', 'Stress', 'Fatigue', 'Class','Accuracy','RT'}:
                             # Define the CSV file path
                             p = os.path.join(base_path, 'HRV', f'HRV_{suffix}')
 
@@ -2395,7 +2415,7 @@ class HumanDataExtraction():
                             total_HRV_dict[(window_size, overlap)] = pd.concat([
                                 total_HRV_dict[(window_size, overlap)], HRV_df])
 
-                        if set(EDA_df.columns) == {'ID', 'Group', 'Time', 'Stress', 'Fatigue', 'Class'}:
+                        if set(EDA_df.columns) == {'ID', 'Group', 'Time', 'Stress', 'Fatigue', 'Class','Accuracy','RT'}:
                                 # Define the CSV file path
                                 p = os.path.join(base_path, 'EDA', f'EDA_{suffix}')
 
@@ -2411,7 +2431,7 @@ class HumanDataExtraction():
                             total_EDA_dict[(window_size, overlap)] = pd.concat([
                                 total_EDA_dict[(window_size, overlap)], EDA_df])
 
-                        if set(RSP_df_chest.columns) == {'ID', 'Group', 'Time', 'Stress', 'Fatigue', 'Class'}:
+                        if set(RSP_df_chest.columns) == {'ID', 'Group', 'Time', 'Stress', 'Fatigue', 'Class','Accuracy','RT'}:
                                 # Define the CSV file path
                                 p = os.path.join(base_path, 'RSP_chest', f'RSP_Chest_{suffix}')
 
@@ -2426,7 +2446,7 @@ class HumanDataExtraction():
                             total_RSP_chest_dict.setdefault((window_size, overlap), pd.DataFrame())
                             total_RSP_chest_dict[(window_size, overlap)] = pd.concat([
                                 total_RSP_chest_dict[(window_size, overlap)], RSP_df_chest])
-                        if set(RSP_df_diaph.columns) == {'ID', 'Group', 'Time', 'Stress', 'Fatigue', 'Class'}:
+                        if set(RSP_df_diaph.columns) == {'ID', 'Group', 'Time', 'Stress', 'Fatigue', 'Class','Accuracy','RT'}:
                                 # Define the CSV file path
                                 p = os.path.join(base_path, 'RSP_diaph', f'RSP_Diaph_{suffix}')
 
@@ -2453,19 +2473,19 @@ class HumanDataExtraction():
                 suffix = f'window{window_size}s_{int(overlap * 100)}.csv'
 
                 hrv_df = total_HRV_dict.get((window_size, overlap), pd.DataFrame())
-                hrv_path = fr'{self.path}\Participants\Dataset\Dataset_HRV_{suffix}'
+                hrv_path = fr'{self.path}\Participants\Dataset\Dataset_HRV\Dataset_HRV_{suffix}'
                 hrv_df.to_csv(hrv_path, index=False)
 
                 eda_df = total_EDA_dict.get((window_size, overlap), pd.DataFrame())
-                eda_path = fr'{self.path}\Participants\Dataset\Dataset_EDA_{suffix}'
+                eda_path = fr'{self.path}\Participants\Dataset\Dataset_EDA\Dataset_EDA_{suffix}'
                 eda_df.to_csv(eda_path, index=False)
 
                 rsp_chest_df = total_RSP_chest_dict.get((window_size, overlap), pd.DataFrame())
-                rsp_c_path = fr'{self.path}\Participants\Dataset\Dataset_RSP_C_{suffix}'
+                rsp_c_path = fr'{self.path}\Participants\Dataset\Dataset_RSP_C\Dataset_RSP_C_{suffix}'
                 rsp_chest_df.to_csv(rsp_c_path, index=False)
 
                 rsp_diaph_df = total_RSP_diaph_dict.get((window_size, overlap), pd.DataFrame())
-                rsp_d_path = fr'{self.path}\Participants\Dataset\Dataset_RSP_D_{suffix}'
+                rsp_d_path = fr'{self.path}\Participants\Dataset\Dataset_RSP_D\Dataset_RSP_D_{suffix}'
                 rsp_diaph_df.to_csv(rsp_d_path, index=False)
 
                 merge_keys = ["Time", "ID", "Group"]
@@ -2502,7 +2522,7 @@ class HumanDataExtraction():
                             rsp_diaph_clean = rsp_diaph_df.drop(columns=drop_cols, errors='ignore')
                             merged_df = merged_df.merge(rsp_diaph_clean, on=merge_keys, how="outer")
                     # Columns to move right after 'Time'
-                    cols_to_move = ['Class', 'Fatigue', 'Stress']
+                    cols_to_move = ['Class', 'Fatigue', 'Stress','Accuracy','RT']
 
                     # Get the current list of all columns
                     cols = list(merged_df.columns)

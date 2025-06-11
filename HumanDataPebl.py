@@ -1,10 +1,6 @@
 
-from Utilities import Utilities
 import pandas as pd
-import os
 import bioread
-import re
-import datetime
 import numpy as np
 
 # Press the green button in the gutter to run the script.
@@ -12,6 +8,128 @@ class HumanDataPebl():
     def __init__(self,Directory):
         self.path=Directory
         self.parlist_df=pd.DataFrame()
+
+    def CreateDataset_PerformanceScore(self, ID, rangeID):
+        Performance_path = f'{self.path}\Participants\Dataset\Performance\performance.csv'
+        pebl_path = f'{self.path}\\PEBL2'
+        parlist_path = f'{self.path}\\Participants\\participation management.csv'
+
+        # Load and clean participant list
+        parlist_df = pd.read_csv(parlist_path, header=0)
+        parlist_df = parlist_df.dropna(subset=['participant', 'Date', 'departmant'], how='all')
+        parlist_df['code'] = pd.to_numeric(parlist_df['code'], errors='coerce').astype('Int64')
+        self.parlist_df = parlist_df
+
+        # Filter participants based on ID parameter
+        if ID is not None:
+            if rangeID:
+                parlist_df = parlist_df[parlist_df['code'] >= ID]
+            else:
+                parlist_df = parlist_df[parlist_df['code'] == ID]
+
+        # Initialize list to collect dataframes
+        performance_dfs = []
+
+        for _, row in parlist_df.iterrows():
+            ID = row['code']
+            Group = row['Group']
+
+            # Define file paths
+            CS_path = f'{pebl_path}\\battery\\stroop\\data\\{ID}\\CS-{ID}.csv'
+            PA_path = f'{pebl_path}\\battery\\PASAT\\data\\{ID}\\PASAT-{ID}.csv'
+            TC_path = f'{pebl_path}\\battery\\twocoladd\\data\\{ID}\\twocol-{ID}.csv'
+            try:
+                CS_df = pd.read_csv(CS_path)
+            except:
+                CS_path = f'{pebl_path}\\battery\\stroop\\data\\{ID}\\CS--{ID}.csv'
+                CS_df = pd.read_csv(CS_path)
+
+
+            # Read CSV files
+            PA_df = pd.read_csv(PA_path)
+            TC_df = pd.read_csv(TC_path)
+
+            # Select relevant columns and add metadata
+            PA_df = PA_df[['rt', 'correct', 'isi']].copy()
+            PA_df['Task'] = 'PASAT'
+            PA_df['ID'] = ID
+            PA_df['Group'] = Group
+            PA_df['Level']=PA_df['isi'].map({3000:'easy',2400:'medium',1800:'hard'})
+            PA_df = PA_df.rename(columns={'rt': 'RT'})
+
+            TC_df = TC_df[['rs', 'corr', 'trial']].copy()
+            TC_df['Task'] = 'TwoColAdd'
+            TC_df['ID'] = ID
+            TC_df['Group'] = Group
+            TC_df['isi']= TC_df['trial'].index.map(lambda x:12000 if x<10 else 7000)
+            # Rename columns for consistency
+            TC_df = TC_df.rename(columns={'rs': 'RT', 'corr': 'correct'})
+            TC_df['Level']=TC_df['isi'].map({12000:'easy',7000:'hard'})
+            CS_df = CS_df[['rt', 'correct', 'trial']].copy()
+            CS_df['Task'] = 'Stroop'
+            CS_df['ID'] = ID
+            CS_df['Group'] = Group
+            CS_df['isi']=CS_df['trial'].index.map(lambda x:300 if x<30 else 200)
+            CS_df['Level']=CS_df['isi'].map({300:'easy',200:'hard'})
+            CS_df = CS_df.rename(columns={'rt': 'RT'})
+            Individual_performance=pd.concat([PA_df, TC_df, CS_df])
+            Individual_performance_path = fr'{self.path}\Participants\{Group}_group\P_{ID}\Performance-{ID}.csv'
+            desired_columns = ['ID', 'Group', 'Task', 'isi', 'Level', 'RT', 'correct']
+            remaining_columns = [col for col in Individual_performance.columns if col not in desired_columns]
+            column_order = desired_columns + remaining_columns
+            # Select columns that actually exist in the dataframe
+            available_columns = [col for col in column_order if col in Individual_performance.columns]
+            Individual_performance = Individual_performance[available_columns]
+            Individual_performance.drop(columns=['trial'])
+            Individual_performance.to_csv(Individual_performance_path)
+            RTSummary = Individual_performance.groupby(['ID','Group','Task','Level'])['RT'].agg(
+                ['count', 'mean']).reset_index()
+            RTSummary.to_csv(fr'{self.path}\Participants\{Group}_group\P_{ID}\RT_Summary_{ID}.csv', index=False)
+
+            # 📊 Summary table for Accuracy by Task_Level and Group
+            AccuracySummary = Individual_performance.groupby(['ID','Group','Task','Level'])['correct'].agg(
+                ['count', 'mean']).reset_index()
+            AccuracySummary.rename(columns={'mean': 'accuracy_mean', 'std': 'accuracy_std'}, inplace=True)
+            AccuracySummary.to_csv(fr'{self.path}\Participants\{Group}_group\P_{ID}\Accuracy_Summary_{ID}.csv', index=False)
+
+            # Add to list
+            performance_dfs.extend([PA_df, TC_df, CS_df])
+
+        # Combine all dataframes
+        if performance_dfs:
+            Performance_df = pd.concat(performance_dfs, ignore_index=True)
+            Performance_df=Performance_df.drop(columns=['trial'])
+            Performance_df = Performance_df[Performance_df['Level'].notna()]
+
+            # Reorder columns: ID, Group, test_type, isi, RT, correct, then any remaining columns
+            desired_columns = ['ID', 'Group', 'Task', 'isi','Level','RT', 'correct']
+            remaining_columns = [col for col in Performance_df.columns if col not in desired_columns]
+            column_order = desired_columns + remaining_columns
+
+            # Select columns that actually exist in the dataframe
+            available_columns = [col for col in column_order if col in Performance_df.columns]
+            Performance_df = Performance_df[available_columns]
+
+            Performance_df.to_csv(Performance_path, index=False)
+
+            # 📊 Summary table for RT by Task_Level and Group
+            RTSummary = Performance_df.groupby(['Level', 'Group'])['RT'].agg(
+                ['count', 'mean', 'std']).reset_index()
+            RTSummary.to_csv(fr'{self.path}\Participants\Dataset\Performance\\RT_Summary.csv', index=False)
+
+            # 📊 Summary table for Accuracy by Task_Level and Group
+            AccuracySummary = Performance_df.groupby(['Level', 'Group'])['correct'].agg(
+                ['count', 'mean', 'std']).reset_index()
+            AccuracySummary.rename(columns={'mean': 'accuracy_mean', 'std': 'accuracy_std'}, inplace=True)
+            AccuracySummary.to_csv(fr'{self.path}\Participants\Dataset\Performance\Accuracy_Summary.csv', index=False)
+
+            print(f"Performance data saved to: {Performance_path}")
+            return Performance_df
+        else:
+            print("No data was processed successfully.")
+
+
+
     def CreateDataset_StressScore(self,ID,rangeID):
         SubjectiveDataset_path=fr'{self.path}\Participants\Dataset\Subjective\SubjectiveDataset.csv'
         participants_path = f'{self.path}\\Participants\\participation management.csv'
@@ -219,11 +337,16 @@ class HumanDataPebl():
             BR_ID=BR_df[BR_df["Sub"]==ID]
             VAS_faID=VAS_fa[VAS_fa["Sub"]==ID]
             VAS_stID=VAS_st[VAS_st["Sub"]==ID]
+
             combined_ID = pd.concat([CS_ID, TC_ID, PA_ID,VAS_faID,VAS_stID,BR_ID], ignore_index=True)
             if ID == 42:
                 VAS_faID.loc[VAS_faID['Score'] == 'z', 'Score'] = 2.14
             # -----------------------------------------------------BioPac-Start_time-----------------------------------------------------------------
             participant_path=fr'{self.path}\Participants\{Group}_group\P_{ID}'
+            performance_Accuracy_path=fr'{participant_path}\Accuracy_Summary_{ID}.csv'
+            performance_RT_path=fr'{participant_path}\RT_Summary_{ID}.csv'
+            performance_Accuracy=pd.read_csv(performance_Accuracy_path)
+            performance_RT=pd.read_csv(performance_RT_path)
             participant_acq=fr'{participant_path}\P_{ID}.acq'
             participant_Trigger=fr'{participant_path}\Trigger_{ID}.csv'
             BioPac = bioread.read_file(participant_acq)
@@ -266,6 +389,49 @@ class HumanDataPebl():
                     combined_ID.loc[12, 'Task'] = 'Break2'
                     combined_ID.loc[24, 'Task'] = 'Break3'
                     combined_ID.loc[33, 'Task'] = 'Break4'
+            # Corrected version - assign Score values based on conditions
+            combined_ID.loc[combined_ID['Task'] == 'CB_easy', 'Accuracy_Mean'] = \
+                performance_Accuracy.loc[(performance_Accuracy['Task'] == 'Stroop') &
+                                         (performance_Accuracy['Level'] == 'easy'), 'accuracy_mean'].values
+            combined_ID.loc[combined_ID['Task'] == 'CB_easy', 'RT_Mean'] = \
+                performance_RT.loc[(performance_RT['Task'] == 'Stroop') &
+                                         (performance_RT['Level'] == 'easy'), 'mean'].values
+            combined_ID.loc[combined_ID['Task'] == 'CB_hard', 'Accuracy_Mean'] = \
+                performance_Accuracy.loc[(performance_Accuracy['Task'] == 'Stroop') &
+                                         (performance_Accuracy['Level'] == 'hard'), 'accuracy_mean'].values
+            combined_ID.loc[combined_ID['Task'] == 'CB_hard', 'RT_Mean'] = \
+                performance_RT.loc[(performance_RT['Task'] == 'Stroop') &
+                                         (performance_RT['Level'] == 'hard'), 'mean'].values
+            combined_ID.loc[combined_ID['Task'] == 'PA_easy', 'Accuracy_Mean'] = \
+                performance_Accuracy.loc[(performance_Accuracy['Task'] == 'PASAT') &
+                                         (performance_Accuracy['Level'] == 'easy'), 'accuracy_mean'].values
+            combined_ID.loc[combined_ID['Task'] == 'PA_easy', 'RT_Mean'] = \
+                performance_RT.loc[(performance_RT['Task'] == 'PASAT') &
+                                         (performance_RT['Level'] == 'easy'), 'mean'].values
+            combined_ID.loc[combined_ID['Task'] == 'PA_medium', 'Accuracy_Mean'] = \
+                performance_Accuracy.loc[(performance_Accuracy['Task'] == 'PASAT') &
+                                         (performance_Accuracy['Level'] == 'medium'), 'accuracy_mean'].values
+            combined_ID.loc[combined_ID['Task'] == 'PA_medium', 'RT_Mean'] = \
+                performance_RT.loc[(performance_RT['Task'] == 'PASAT') &
+                                         (performance_RT['Level'] == 'medium'), 'mean'].values
+            combined_ID.loc[combined_ID['Task'] == 'PA_hard', 'Accuracy_Mean'] = \
+                performance_Accuracy.loc[(performance_Accuracy['Task'] == 'PASAT') &
+                                         (performance_Accuracy['Level'] == 'hard'), 'accuracy_mean'].values
+            combined_ID.loc[combined_ID['Task'] == 'PA_hard', 'RT_Mean'] = \
+                performance_RT.loc[(performance_RT['Task'] == 'PASAT') &
+                                         (performance_RT['Level'] == 'hard'), 'mean'].values
+            combined_ID.loc[combined_ID['Task'] == 'TC_easy', 'Accuracy_Mean'] = \
+                performance_Accuracy.loc[(performance_Accuracy['Task'] == 'TwoColAdd') &
+                                         (performance_Accuracy['Level'] == 'easy'), 'accuracy_mean'].values
+            combined_ID.loc[combined_ID['Task'] == 'TC_easy', 'RT_Mean'] = \
+                performance_RT.loc[(performance_RT['Task'] == 'TwoColAdd') &
+                                         (performance_RT['Level'] == 'easy'), 'mean'].values
+            combined_ID.loc[combined_ID['Task'] == 'TC_hard', 'Accuracy_Mean'] = \
+                performance_Accuracy.loc[(performance_Accuracy['Task'] == 'TwoColAdd') &
+                                         (performance_Accuracy['Level'] == 'hard'), 'accuracy_mean'].values
+            combined_ID.loc[combined_ID['Task'] == 'TC_hard', 'RT_Mean'] = \
+                performance_RT.loc[(performance_RT['Task'] == 'TwoColAdd') &
+                                         (performance_RT['Level'] == 'hard'), 'mean'].values
             combined_ID.to_csv(participant_Trigger, index=False)
 
         else:
