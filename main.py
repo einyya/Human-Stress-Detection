@@ -8,13 +8,13 @@ if __name__ == '__main__':
     #DataPath = r'C:\Users\97254\OneDrive\Desktop\Human Bio Signals Analysis'
     DataPath = r'C:\Users\e3bom\Desktop\Human Bio Signals Analysis'
     Make_Trigger=False
-    Make_DataSet=False
-    Analysis_DataSet=True
+    Make_DataSet=True
+    Analysis_DataSet=False
 
     #________________________________________________________Make Trigger Table_______________________________________________________
     if Make_Trigger:
         hdp = HumanDataPebl(DataPath)
-        hdp.CreateDataset_PerformanceScore(ID=None,rangeID=False)
+        hdp.CreateDataset_PerformanceScore(ID=None,rangeID=True)
         hdp.Make_Trigger_Table(ID=None,rangeID=True)
         hdp.CreateDataset_StressScore(ID=None,rangeID=True)
     #________________________________________________________SortData_______________________________________________________
@@ -33,8 +33,9 @@ if __name__ == '__main__':
             hde.Check_MinMaxVlaue(ID=None,rangeID=False)
 
         if Dataset:
-            # hde.CleanData(ID=42,rangeID=True)
-            hde.CreateDataset(ID=None,rangeID=False)
+            # hde.CleanData(ID=65,rangeID=True)
+            hde.CreateDataset(ID=None,rangeID=True)
+            # hde.MissingData(ID=None, rangeID=False)
 
         if Combine:
             hde.AX_plot_signals_VAS(ID=52,rangeID=True,Signals_plot=True,Cor_plot=False)
@@ -58,4 +59,4 @@ if __name__ == '__main__':
         ad = AnalysisData(DataPath)
         ad.ML_models_Classification()
         # ad.ML_models_Prediction()
-        # ad.GroupDiff()
+        ad.GroupDiff()
