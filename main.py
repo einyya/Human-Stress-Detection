@@ -33,7 +33,7 @@ if __name__ == '__main__':
             hde.Check_MinMaxVlaue(ID=None,rangeID=False)
 
         if Dataset:
-            # hde.CleanData(ID=65,rangeID=True)
+            hde.CleanData(ID=None,rangeID=True)
             hde.CreateDataset(ID=None,rangeID=True)
             # hde.MissingData(ID=None, rangeID=False)
 
