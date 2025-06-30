@@ -205,17 +205,23 @@ class HumanDataExtraction():
             rsp_c_peaks = np.insert(rsp_c_peaks, 0, 0)
             time_rsp_c = info_rsp_c["RSP_Peaks"]/ sampling_rate
             hrv_c_rsa=nk.hrv_rsa(ecg_signals,rsp_c_signal, info_ecg, sampling_rate=sampling_rate, continuous=True)
+            full_rsp_rate_c = nk.signal_rate(info_rsp_c["RSP_Peaks"], sampling_rate=sampling_rate)
+            rsp_c_rvt = nk.rsp_rvt(rsp_c_signal['RSP_Clean'], method="birn2006", show=False)
 
             RSP_c_cleaned = pd.DataFrame({
                 'Time': time_rsp_c,
                 'RSP_c_RR': rsp_c_peaks,
-                'RSP_c_Peaks': info_rsp_c["RSP_Peaks"]
+                'RSP_c_Peaks': info_rsp_c["RSP_Peaks"],
+                'RSP_c_Troughs': info_rsp_c["RSP_Troughs"],
+                'RSP_c_rsp_rate': full_rsp_rate_c
+
             })
             RSP_c_cleaned.to_csv(fr'{directory}\RSP_c_RR.csv')
             RSP_c_cleaned = pd.DataFrame({
                 'Time': rsp_c_time,
                 'RSP_c': rsp_c_signal['RSP_Clean'],
                 'RSP_c_Rate': rsp_c_signal["RSP_Rate"],
+                'RSP_c_rvt': rsp_c_rvt,
                 'RSP_c_Troughs': rsp_c_signal["RSP_Troughs"],
                 'RSP_c_RVT': rsp_c_signal["RSP_RVT"],
                 'RSP_c_Phase_Completion': rsp_c_signal["RSP_Phase_Completion"],
@@ -237,17 +243,22 @@ class HumanDataExtraction():
             rsp_d_peaks = np.insert(rsp_d_peaks, 0, 0)
             time_rsp_d = info_rsp_d["RSP_Peaks"]/ sampling_rate
             hrv_d_rsa=nk.hrv_rsa(ecg_signals,rsp_d_signal, info_ecg, sampling_rate=sampling_rate, continuous=True)
+            full_rsp_rate_d = nk.signal_rate(info_rsp_d["RSP_Peaks"], sampling_rate=sampling_rate)
+            rsp_d_rvt = nk.rsp_rvt(rsp_d_signal['RSP_Clean'], method="birn2006", show=False)
 
             RSP_d_cleaned = pd.DataFrame({
                 'Time': time_rsp_d,
                 'RSP_d_RR': rsp_d_peaks,
-                'RSP_d_Peaks': info_rsp_d["RSP_Peaks"]
+                'RSP_d_Peaks': info_rsp_d["RSP_Peaks"],
+                'RSP_d_Troughs': info_rsp_d["RSP_Troughs"],
+                'RSP_d_rsp_rate': full_rsp_rate_d
             })
             RSP_d_cleaned.to_csv(fr'{directory}\RSP_d_RR.csv')
             RSP_d_cleaned = pd.DataFrame({
                 'Time': rsp_d_time,
                 'RSP_d': rsp_d_signal['RSP_Clean'],
                 'RSP_d_Rate': rsp_d_signal["RSP_Rate"],
+                'RSP_d_rvt': rsp_d_rvt,
                 'RSP_d_Troughs': rsp_d_signal["RSP_Troughs"],
                 'RSP_d_RVT': rsp_d_signal["RSP_RVT"],
                 'RSP_d_Phase_Completion': rsp_d_signal["RSP_Phase_Completion"],
@@ -1807,79 +1818,116 @@ class HumanDataExtraction():
                     plt.title('HRV_CVNN vs HRV_RMSSD by Class')
                     plt.savefig(fr'{time_window_plot_dir}\Scatter_{window_size}_{overlap}.png')
                     plt.show()
-    def MissingData(self,ID,rangeID):
-        Summary=pd.DataFrame()
-        signals=['EDA','HRV','RSP_C','RSP_D']
-        Summary_dup=pd.DataFrame()
-        for signal in signals:
-            miss_path=fr'{self.path}\Participants\Dataset\Dataset_{signal}\Total_drop_rows_{signal}.csv'
-            miss_df=pd.read_csv(miss_path)
-            group_counts_W = miss_df.groupby(['Window', 'Overlap']).size().reset_index(name='Count')
-            group_counts_W.insert(0,'Signal',signal)
-            len_list=[]
-            for index,row in group_counts_W.iterrows():
-                ws=int(row['Window'])
-                ov=row['Overlap']
-                full_path=fr'{self.path}\Participants\Dataset\Dataset_{signal}\Dataset_{signal}_window{ws}s_{ov * 100:.0f}.csv'
-                full_df=pd.read_csv(full_path)
-                len_list.append(len(full_df))
-                # 1. Group and count occurrences per Window, Overlap, and Time
-                group_counts_time = miss_df.groupby(['Window', 'Overlap', 'Time','ID']).size().reset_index(name='Count')
-                filtered_df = group_counts_time[(group_counts_time['Window'] == ws) &
-                                                (group_counts_time['Overlap'] == ov)]
-                # sum = filtered_df['Count'].sum()
-                # Create the new column name from ws and ov
-                col_name = f'{ws}_{ov}'
-                # Create a new column with the name 'ws_ov' from the 'Time' column
-                filtered_df[col_name] = filtered_df['Time']
-                # Keep only that new column
-                filtered_df = filtered_df[[col_name]]
-                # 4. Concatenate the two DataFrames row-wise
-                if col_name in Summary_dup.columns:
-                    existing_values = Summary_dup[col_name].tolist()
-                    new_values = filtered_df[col_name].tolist()
-                    combined = existing_values + new_values
-                    Summary_dup = Summary_dup.reindex(range(len(combined)))
-                    Summary_dup[col_name] = combined
-                else:
-                    Summary_dup = Summary_dup.join(filtered_df[[col_name]], how='outer')
-            group_counts_W['Full']=len_list
-            group_counts_W['Full']=group_counts_W['Full'].astype(int)
-            group_counts_W['Frec']=group_counts_W['Count']/group_counts_W['Full']
-            Summary = pd.concat([Summary, group_counts_W], axis=0, ignore_index=True)
-        Summary_dup_Time = Summary_dup.apply(lambda col: col.mask(col.duplicated()))
-        counts_per_column = Summary_dup_Time.count()
-        Summary_W = Summary.groupby(['Window', 'Overlap'], as_index=False)[['Count', 'Full']].sum()
-        Summary_W['Count']=counts_per_column.values
-        Summary_W['Frec'] = Summary_W['Count'] / Summary_W['Full']
-        Summary_W.to_csv(fr'{self.path}\Participants\Dataset\Missing_Data\Missing_Data.csv')
+
+    def MissingData(self, ID, rangeID):
+        data_path = fr'{self.path}\Participants\Dataset\Dataset_By_Window\Raw_Data\Dataset_total.csv'
+        summary_0_1_path = fr'{self.path}\Participants\Dataset\Missing_Data\Missing_Data_0_1.csv'
+        summary_path = fr'{self.path}\Participants\Dataset\Missing_Data\Missing_Data_no_0_1.csv'
+        cleaned_output_folder = fr'{self.path}\Participants\Dataset\Dataset_By_Window\Clean_Data'
+        cols_to_drop_precent=0.15
+        NaN_Path = fr'{self.path}\Participants\Dataset\Missing_Data\NaN_prec{cols_to_drop_precent}.csv'
+        nan_summary_rows = []  # initialize list outside the loop
+        os.makedirs(fr'{self.path}\Participants\Dataset\Missing_Data', exist_ok=True)
+        os.makedirs(cleaned_output_folder, exist_ok=True)
+
+        data_df = pd.read_csv(data_path)
+        data_df_group=data_df.copy()
+        # Columns to exclude from missing frequency calculation
+        exclude_cols = ['Class', 'Test_Type', 'Level', 'Accuracy', 'RT', 'Stress', 'Fatigue',
+                        'ID', 'Group', 'Time']
+        rows = []
+
+        # Step 1: Calculate missing frequencies by window and overlap
+        for (window, overlap), group in data_df_group.groupby(["Window", "Overlap"]):
+            group_clean = group.drop(columns=[col for col in exclude_cols if col in group.columns])
+            nan_frequencies = group_clean.isna().sum() / len(group_clean)
+            nan_frequencies["Window"] = window
+            nan_frequencies["Overlap"] = overlap
+            rows.append(nan_frequencies)
+
+        result_df = pd.DataFrame(rows)
+        columns = ['Window', 'Overlap'] + [col for col in result_df.columns if col not in ['Window', 'Overlap']]
+        result_df = result_df[columns]
+        result_df.to_csv(fr'{self.path}\Participants\Dataset\Missing_Data\Missing_Data.csv', index=False)
+
+        # Step 2: Drop constant binary columns (all 1s or all 0s)
+        df = result_df.copy()
+        summary_rows = []
+        for col in df.columns:
+            col_data = df[col].dropna()
+            unique_vals = col_data.unique()
+            if len(unique_vals) == 1 and unique_vals[0] in [0, 1]:
+                summary_rows.append({
+                    "Column": col,
+                    "Reason": f"All {int(unique_vals[0])}"
+                })
+
+        binary_constant_cols = [row["Column"] for row in summary_rows]
+        df_clean = df.drop(columns=binary_constant_cols)
+        df_clean.to_csv(summary_path, index=False)
+
+        summary_df = pd.DataFrame(summary_rows).sort_values(by="Reason", ascending=True).reset_index(drop=True)
+        summary_df.to_csv(summary_0_1_path, index=False)
+
+        # Step 3: Drop high-missing columns (>15%) per window-overlap and save cleaned files
+        for _, row in result_df.iterrows():
+            window = row['Window']
+            overlap = row['Overlap']
+            subset = data_df[(data_df['Window'] == window) & (data_df['Overlap'] == overlap)]
+
+            # Find columns with more than 15% missing
+            cols_to_drop = row.drop(labels=['Window', 'Overlap'])
+            cols_to_drop = cols_to_drop[cols_to_drop > cols_to_drop_precent].index.tolist()
+            cleaned_subset = subset.drop(columns=cols_to_drop)
+
+            # Count rows before dropping NaNs
+            Rows_Before_NaN = len(cleaned_subset)
+
+            # Drop rows with any NaNs
+            # Drop rows with NaNs in feature columns only (not in excluded meta columns)
+            feature_cols = [col for col in cleaned_subset.columns if col not in exclude_cols]
+            cleaned_subset = cleaned_subset.dropna(subset=feature_cols)
+            # Count rows after dropping NaNs
+            Rows_After_NaN = len(cleaned_subset)
+
+            # Calculate percentage of rows removed
+            percent_NaN = (Rows_Before_NaN - Rows_After_NaN) / Rows_Before_NaN if Rows_Before_NaN > 0 else 0
+
+            nan_summary_rows.append({
+                "Window": window,
+                "Overlap": overlap,
+                "Rows_Before_NaN": Rows_Before_NaN,
+                "Rows_After_NaN": Rows_After_NaN,
+                "percent_NaN (%)": round(percent_NaN, 2),
+            })
+
+            filename = f"Dataset_{int(window)}s_{int(overlap * 100)}.csv"
+            filepath = os.path.join(cleaned_output_folder, filename)
+            cleaned_subset.to_csv(filepath, index=False)
+        nan_df = pd.DataFrame(nan_summary_rows)
+        nan_df.to_csv(NaN_Path)
+        print("Finished generating cleaned datasets with missing-value thresholding.")
+        return result_df
+
+    def unite_datasets(self, input_folder, output_filename="Dataset_total.csv"):
+        all_files = [f for f in os.listdir(input_folder) if f.endswith(".csv")]
+        all_dfs = []
+
+        for file in all_files:
+            file_path = os.path.join(input_folder, file)
+            try:
+                df = pd.read_csv(file_path, low_memory=False)
+                all_dfs.append(df)
+            except Exception as e:
+                print(f"Error reading {file}: {e}")
+
+        Dataset_total = pd.concat(all_dfs, ignore_index=True)
+        Dataset_total=Dataset_total.sort_values(by=['Window','Overlap','ID'])
+        output_path = os.path.join(input_folder, output_filename)
+        Dataset_total.to_csv(output_path, index=False)
+        print(f"Dataset saved to: {output_path}")
 
     def CreateDataset(self, ID=None, rangeID=False):
-        # warnings.filterwarnings("ignore")
-        # logging.getLogger().setLevel(logging.CRITICAL)
-
-        # השתקת הדפסות של צד שלישי (כולל ספריות כמו pandas, neurokit וכו')
-        # sys.stdout = open(os.devnull, 'w')
-        # sys.stderr = open(os.devnull, 'w')
-
-        window_sizes = [5, 10, 30, 60]
-        overlaps = [0.0, 0.5]
-        # window_sizes = [60]
-        # overlaps = [0.0]
-        total_dataset_dir = fr'{self.path}\Participants\Dataset'
-        os.makedirs(total_dataset_dir, exist_ok=True)
-
-        # ── Load participant table ─────────────
-        participants_path = f'{self.path}\\Participants\\participation management.csv'
-        participants_df = pd.read_csv(participants_path).dropna(axis=1, how='all')
-        participants_df = participants_df.dropna(subset=['participant', 'Date', 'departmant'], how='all')
-        participants_df['code'] = pd.to_numeric(participants_df['code'], errors='coerce').astype('Int64')
-
-        if ID is not None:
-            if rangeID:
-                participants_df = participants_df[participants_df['code'] >= ID]
-            else:
-                participants_df = participants_df[participants_df['code'] == ID]
         def label_window(t):
             for _, tr in Trigger_df.iterrows():
                 task = str(tr["Task"]).lower()
@@ -1896,7 +1944,6 @@ class HumanDataExtraction():
                         level = parts[1].lower() if len(parts) > 1 else None
                         return "test", level, test_type
             return None, None, None
-
         def impute_features(df, ws, ol, missing_threshold=0.15, verbose=True, model_type='linear'):
             delete_missing_values = True
             df = df.copy()
@@ -2035,20 +2082,40 @@ class HumanDataExtraction():
             accuracy = match["Accuracy_Mean"].values[0] if not match.empty else np.nan
             rt = match["RT_Mean"].values[0] if not match.empty else np.nan
             return stress, fatigue, accuracy, rt
-
         def compute_slope(signal):
             if len(signal) < 2 or np.all(np.isnan(signal)):
                 return np.nan
             x = np.arange(len(signal))
             slope, _, _, _, _ = stats.linregress(x, signal)
             return slope
+        # window_sizes = [5,10,30,60]
+        # overlaps = [0,0.5]
+        window_sizes = [5]
+        overlaps = [0.5]
+        total_dataset_dir = fr'{self.path}\Participants\Dataset\Dataset_By_Window\Raw_Data'
+        os.makedirs(total_dataset_dir, exist_ok=True)
 
+        # ── Load participant table ─────────────
+        participants_path = f'{self.path}\\Participants\\participation management.csv'
+        participants_df = pd.read_csv(participants_path).dropna(axis=1, how='all')
+        participants_df = participants_df.dropna(subset=['participant', 'Date', 'departmant'], how='all')
+        participants_df['code'] = pd.to_numeric(participants_df['code'], errors='coerce').astype('Int64')
+
+        if ID is not None:
+            if rangeID:
+                participants_df = participants_df[participants_df['code'] >= ID]
+            else:
+                participants_df = participants_df[participants_df['code'] == ID]
+
+        Data_Total_df = pd.DataFrame()
         # ── Iterate window configs ──────────────────────
-        for window_size in tqdm(window_sizes, desc=f"[ID={ID}] Window Sizes", leave=False):
-            for overlap in tqdm(overlaps, desc=f"Overlap {window_size}s", leave=False):
+        for window_size in tqdm(window_sizes, desc=f" Window Sizes", leave=False):
+            for overlap in tqdm(overlaps, desc=f"Overlap in {window_size}s ", leave=False):
                 # Iterate over participants
-                for _, row in participants_df.iterrows():
+                Data_df = pd.DataFrame()
+                for _, row in tqdm(participants_df.iterrows(), desc=f"Participants", leave=False):
                     ID = row['code']
+                    print(ID)
                     Group = row['Group']
                     directory = fr'{self.path}\Participants\{Group}_group\P_{ID}'
 
@@ -2079,11 +2146,10 @@ class HumanDataExtraction():
                     RSP_d_F = pd.read_csv(fr'{directory}\RSP_d_F.csv')
                     RSP_c_RR = pd.read_csv(fr'{directory}\RSP_c_RR.csv')
                     RSP_d_RR = pd.read_csv(fr'{directory}\RSP_d_RR.csv')
-                    Data_df = pd.DataFrame()
                     window_samples = int(window_size)
-                    step = int(window_samples * (1 - overlap))
+                    step = window_samples * (1 - overlap)
                     RSP_c_max_time = BioPac.named_channels['Chest Respiration'].time_index[-1]
-                    for j, i in enumerate(tqdm(np.arange(0, RSP_c_max_time - window_samples + 1, step), desc=f"Windows {window_size}s/{overlap}")):
+                    for j, i in enumerate(tqdm(np.arange(0, RSP_c_max_time - window_samples + 1, step), desc=f"{ID} Windows {window_size}s/{overlap}")):
                         HRV_RR_window = HRV_RR_data.loc[
                             (HRV_RR_data['Time'] >= i) &
                             (HRV_RR_data['Time'] < (i + window_samples)),'HRV_RR'].values
@@ -2092,13 +2158,10 @@ class HumanDataExtraction():
                             (HRV_F_data['Time'] < (i + window_samples))]
                         RSP_c_RR_window = RSP_c_RR.loc[
                             (RSP_c_RR['Time'] >= i ) &
-                            (RSP_c_RR['Time'] < (i + window_samples)),
-                            'RSP_c_RR'].values
+                            (RSP_c_RR['Time'] < (i + window_samples))]
                         RSP_d_RR_window  = RSP_d_RR.loc[
                             (RSP_d_RR['Time'] >= i) &
-                            (RSP_d_RR['Time'] < (i + window_samples)),
-                            'RSP_d_RR'].values
-
+                            (RSP_d_RR['Time'] < (i + window_samples))]
                         EDA_window = EDA_data.loc[
                             (EDA_data['Time'] >= i) &
                             (EDA_data['Time'] < (i + window_samples))]
@@ -2157,14 +2220,14 @@ class HumanDataExtraction():
                         try:
                             hrv_welch = nk.hrv_frequency(HRV_F_window["ECG_R_Peaks"], sampling_rate=sample_rate, show=True, psd_method="welch")
                             hrv_features.update({
-                                'HRV_LF': hrv_welch["HRV_LF"],
-                                'HRV_HF': hrv_welch["HRV_HF"],
-                                'HRV_HFn': hrv_welch["HRV_HFn"],
-                                'HRV_LFn': hrv_welch["HRV_LFn"],
-                                'HRV_LFHF': hrv_welch["HRV_LFHF"],
-                                'HRV_LnHF': hrv_welch["HRV_LnHF"],
-                                'HRV_TP': hrv_welch["HRV_TP"],
-                                'HRV_VHF': hrv_welch["HRV_VHF"]
+                                'HRV_LF': hrv_welch["HRV_LF"][0],
+                                'HRV_HF': hrv_welch["HRV_HF"][0],
+                                'HRV_HFn': hrv_welch["HRV_HFn"][0],
+                                'HRV_LFn': hrv_welch["HRV_LFn"][0],
+                                'HRV_LFHF': hrv_welch["HRV_LFHF"][0],
+                                'HRV_LnHF': hrv_welch["HRV_LnHF"][0],
+                                'HRV_TP': hrv_welch["HRV_TP"][0],
+                                'HRV_VHF': hrv_welch["HRV_VHF"][0]
                             })
                         except:
                             hrv_features.update({
@@ -2214,13 +2277,9 @@ class HumanDataExtraction():
                             eda_features.update({
                                 'EDA_Sympathetic': np.nan})
                         try:
-                            rsp, info = nk.rsp_process(RSP_c_F['RSP_c'])
-                            rsp_c_rrv = nk.rsp_rrv(rsp, show=False)
-
+                            rsp_c_rrv = nk.rsp_rrv(RSP_c_RR_window['RSP_c_rsp_rate'], troughs=RSP_c_RR_window['RSP_c_Troughs'], sampling_rate=sample_rate)
                             rrv_c_features = {
                                 'RSP_C_RRV_RMSSD': rsp_c_rrv.get("RRV_RMSSD", [np.nan])[0],
-                                'RSP_C_RRV_SD': rsp_c_rrv.get("RRV_SD", [np.nan])[0],
-                                'RSP_C_RRV_CV': rsp_c_rrv.get("RRV_CV", [np.nan])[0],
                                 'RSP_C_RRV_MeanBB': rsp_c_rrv.get("RRV_MeanBB", [np.nan])[0],
                                 'RSP_C_RRV_MedianBB': rsp_c_rrv.get("RRV_MedianBB", [np.nan])[0],
                                 'RSP_C_RRV_MadBB': rsp_c_rrv.get("RRV_MadBB", [np.nan])[0],
@@ -2241,9 +2300,41 @@ class HumanDataExtraction():
                             }
 
                         except Exception as e:
-                            print(f"RRV Chest feature extraction failed: {e}")
-                            rrv_c_features = {key: np.nan for key in rrv_c_features.keys()}
-
+                            print(f"RRV_C Chest feature extraction failed: {e}")
+                            rrv_c_features = {
+                                'RSP_C_RRV_RMSSD': np.nan,
+                                'RSP_C_RRV_MeanBB': np.nan,
+                                'RSP_C_RRV_MedianBB': np.nan,
+                                'RSP_C_RRV_MadBB': np.nan,
+                                'RSP_C_RRV_SD2': np.nan,
+                                'RSP_C_RRV_SD1': np.nan,
+                                'RSP_C_RRV_SD2SD1': np.nan,
+                                'RSP_C_RRV_SampEn': np.nan,
+                                'RSP_C_RRV_ApEn': np.nan,
+                                'RSP_C_RRV_CVSD': np.nan,
+                                'RSP_C_RRV_CVBB': np.nan,
+                                'RSP_C_RRV_MCVBB': np.nan,
+                                'RSP_C_RRV_LF': np.nan,
+                                'RSP_C_RRV_HF': np.nan,
+                                'RSP_C_RRV_LFHF': np.nan,
+                                'RSP_C_RRV_VLF': np.nan,
+                                'RSP_C_RRV_HFn': np.nan,
+                                'RSP_C_RRV_LFn': np.nan
+                            }
+                        try:
+                            # --- מאפייני RVT ---
+                            rvt_c_features = {
+                                'RSP_C_RVT_Mean_BIRN': np.nanmean(RSP_c_F_window['RSP_c_rvt']),
+                                'RSP_C_RVT_Median_BIRN': np.nanmedian(RSP_c_F_window['RSP_c_rvt']),
+                                'RSP_C_RVT_Std_BIRN': np.nanstd(RSP_c_F_window['RSP_c_rvt']),
+                            }
+                        except Exception as e:
+                            print(f"RVT error: {e}")
+                            rvt_c_features = {
+                                'RSP_C_RVT_Mean_BIRN': np.nan,
+                                'RSP_C_RVT_Median_BIRN': np.nan,
+                                'RSP_C_RVT_Std_BIRN': np.nan
+                            }
                         try:
                             rsp_c_features = {
                                 'RSP_C_Rate_Mean': RSP_c_F_window['RSP_c_Rate'].mean(),
@@ -2280,16 +2371,12 @@ class HumanDataExtraction():
 
                         # חיבור כל המאפיינים של chest respiration
                         rsp_c_features.update(rrv_c_features)
+                        rsp_c_features.update(rvt_c_features)
 
                         try:
-
-                            rsp, info = nk.rsp_process(RSP_d_F['RSP_d'])
-                            rsp_d_rrv = nk.rsp_rrv(rsp, show=False)
-
-                            rrv_features = {
+                            rsp_d_rrv = nk.rsp_rrv(RSP_d_RR_window['RSP_d_rsp_rate'], troughs=RSP_d_RR_window['RSP_d_Troughs'], sampling_rate=sample_rate)
+                            rrv_d_features = {
                                 'RSP_D_RRV_RMSSD': rsp_d_rrv.get("RRV_RMSSD", [np.nan])[0],
-                                'RSP_D_RRV_SD': rsp_d_rrv.get("RRV_SD", [np.nan])[0],
-                                'RSP_D_RRV_CV': rsp_d_rrv.get("RRV_CV", [np.nan])[0],
                                 'RSP_D_RRV_MeanBB': rsp_d_rrv.get("RRV_MeanBB", [np.nan])[0],
                                 'RSP_D_RRV_MedianBB': rsp_d_rrv.get("RRV_MedianBB", [np.nan])[0],
                                 'RSP_D_RRV_MadBB': rsp_d_rrv.get("RRV_MadBB", [np.nan])[0],
@@ -2310,9 +2397,9 @@ class HumanDataExtraction():
                             }
 
                         except Exception as e:
-                            print(f"RRV feature extraction failed: {e}")
-                            rrv_features = {key: np.nan for key in [
-                                'RSP_D_RRV_RMSSD', 'RSP_D_RRV_SD', 'RSP_D_RRV_CV', 'RSP_D_RRV_MeanBB',
+                            print(f"RRV_D feature extraction failed: {e}")
+                            rrv_d_features = {key: np.nan for key in [
+                                'RSP_D_RRV_RMSSD', 'RSP_D_RRV_MeanBB',
                                 'RSP_D_RRV_MedianBB',
                                 'RSP_D_RRV_MadBB', 'RSP_D_RRV_SD2', 'RSP_D_RRV_SD1', 'RSP_D_RRV_SD2SD1',
                                 'RSP_D_RRV_SampEn',
@@ -2321,21 +2408,19 @@ class HumanDataExtraction():
                                 'RSP_D_RRV_HF', 'RSP_D_RRV_LFHF', 'RSP_D_RRV_VLF', 'RSP_D_RRV_HFn', 'RSP_D_RRV_LFn'
                             ]}
 
-                        # try:
-                        #     # --- מאפייני RVT ---
-                        #     rsp_d_rvt = nk.rsp_rvt(RSP_d_F['RSP_d'], method="birn2006", show=False)
-                        #     rvt_features = {
-                        #         'RSP_D_RVT_Mean_BIRN': np.nanmean(rsp_d_rvt['RVT']),
-                        #         'RSP_D_RVT_Median_BIRN': np.nanmedian(rsp_d_rvt['RVT']),
-                        #         'RSP_D_RVT_Std_BIRN': np.nanstd(rsp_d_rvt['RVT']),
-                        #     }
-                        # except Exception as e:
-                        #     print(f"RVT error: {e}")
-                        #     rvt_features = {
-                        #         'RSP_D_RVT_Mean_BIRN': np.nan,
-                        #         'RSP_D_RVT_Median_BIRN': np.nan,
-                        #         'RSP_D_RVT_Std_BIRN': np.nan
-                        #     }
+                        try:
+                            rvt_d_features = {
+                                'RSP_D_RVT_Mean_BIRN': np.nanmean(RSP_d_F_window['RSP_d_rvt']),
+                                'RSP_D_RVT_Median_BIRN': np.nanmedian(RSP_d_F_window['RSP_d_rvt']),
+                                'RSP_D_RVT_Std_BIRN': np.nanstd(RSP_d_F_window['RSP_d_rvt']),
+                            }
+                        except Exception as e:
+                            print(f"RVT error: {e}")
+                            rvt_d_features = {
+                                'RSP_D_RVT_Mean_BIRN': np.nan,
+                                'RSP_D_RVT_Median_BIRN': np.nan,
+                                'RSP_D_RVT_Std_BIRN': np.nan
+                            }
                         try:
                             rsp_d_features = {
                                 'RSP_D_Rate_Mean': RSP_d_F_window['RSP_d_Rate'].mean(),
@@ -2372,8 +2457,8 @@ class HumanDataExtraction():
                             rsp_d_features = {}
 
                         # חיבור הכל
-                        rsp_d_features.update(rrv_features)
-                        # rsp_d_features.update(rvt_features)
+                        rsp_d_features.update(rrv_d_features)
+                        rsp_d_features.update(rvt_d_features)
 
                         center_time = (i + window_samples / 2)
                         stress, fatigue, accuracy, rt = trigger_attrs(center_time)
@@ -2397,11 +2482,19 @@ class HumanDataExtraction():
                         }
 
                         Data_df = pd.concat([Data_df, pd.DataFrame([row_data])], ignore_index=True)
+                    print(fr"finished {ID}")
+                Data_df.insert(0, 'Window', window_size)
+                Data_df.insert(1, 'Overlap', overlap)
+                Data_Total_df = pd.concat([Data_Total_df, Data_df], ignore_index=True)
+                save_name = f'Dataset_{window_size}s_{int(overlap * 100)}.csv'
+                save_path = os.path.join(total_dataset_dir, save_name)
+                Data_df.to_csv(save_path, index=False)
+                print(f"✅ Saved: {save_name}")
 
-            # --- סידור עמודות ושמירה לקובץ ---
-            save_name = f'Dataset_{window_size}s_{int(overlap * 100)}.csv'
-            save_path = os.path.join(total_dataset_dir, save_name)
-            Data_df.to_csv(save_path, index=False)
-            print(f"✅ Saved: {save_name}")
+        save_name = f'Dataset_total.csv'
+        save_path = os.path.join(total_dataset_dir, save_name)
+        Data_Total_df=Data_Total_df.sort_values(by=['Window','Overlap','ID'])
+        Data_Total_df.to_csv(save_path, index=False)
+        print(f"✅ Saved: {save_name}")
 
 

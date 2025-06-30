@@ -8,8 +8,8 @@ if __name__ == '__main__':
     #DataPath = r'C:\Users\97254\OneDrive\Desktop\Human Bio Signals Analysis'
     DataPath = r'C:\Users\e3bom\Desktop\Human Bio Signals Analysis'
     Make_Trigger=False
-    Make_DataSet=True
-    Analysis_DataSet=False
+    Make_DataSet=False
+    Analysis_DataSet=True
 
     #________________________________________________________Make Trigger Table_______________________________________________________
     if Make_Trigger:
@@ -34,8 +34,9 @@ if __name__ == '__main__':
 
         if Dataset:
             hde.CleanData(ID=None,rangeID=True)
-            hde.CreateDataset(ID=None,rangeID=True)
-            # hde.MissingData(ID=None, rangeID=False)
+            hde.CreateDataset(ID=None,rangeID=False)
+            hde.unite_datasets(input_folder=fr"{hde.path}\Participants\Dataset\Dataset_By_Window\Raw_Data")
+            hde.MissingData(ID=None, rangeID=False)
 
         if Combine:
             hde.AX_plot_signals_VAS(ID=52,rangeID=True,Signals_plot=True,Cor_plot=False)
@@ -57,6 +58,12 @@ if __name__ == '__main__':
     #________________________________________________________SortData_______________________________________________________
     if Analysis_DataSet:
         ad = AnalysisData(DataPath)
-        ad.ML_models_Classification()
-        # ad.ML_models_Prediction()
-        ad.GroupDiff()
+        for no_breath in [False, True]:
+            for clases in [False, True]:
+                ad.ML_models_Classification(n_repeats=9, no_breath_data=no_breath, clases_3=clases)
+        ad.ML_models_Prediction()
+        ad.GroupDiffPlot()
+        ad.StatisticalTest()
+        ad.BetaReggresion()
+
+

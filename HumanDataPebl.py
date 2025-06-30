@@ -163,9 +163,13 @@ class HumanDataPebl():
             Trigger_df = Trigger_df[Trigger_df['Task'] != 'VAS_Fatigue']
             Trigger_df = Trigger_df.drop(columns=['Score','End','Start']).reset_index(drop=True)
             Trigger_df['Stress']=Trigger_S['Stress']
-            Trigger_df['Stress'] = (Trigger_S['Stress'] - Trigger_S['Stress'].mean()) / Trigger_S['Stress'].std()
+            start_stress=Trigger_S.iloc[0]
+            normalized_stress = (Trigger_S['Stress'] - start_stress) / start_stress
+            Trigger_df['Stress_N'] = normalized_stress
             Trigger_df['Fatigue']=Trigger_F['Fatigue']
-            Trigger_df['Stress'] = (Trigger_S['Stress'] - Trigger_S['Stress'].mean()) / Trigger_S['Stress'].std()
+            start_fatigue=Trigger_F.iloc[0]
+            normalized_fatigue = (Trigger_F['Fatigue'] - start_fatigue) / start_fatigue
+            Trigger_df['Fatigue_N'] = normalized_fatigue
             Trigger_df['Group']=Group
             Trigger_df.at[0,'Task']='Start'
             Trigger_df['Task'] = Trigger_df['Task'].replace({
@@ -181,6 +185,8 @@ class HumanDataPebl():
             })
             Total_Trigger=pd.concat([Trigger_df,Total_Trigger])
         Total_Trigger.to_csv(SubjectiveDataset_path)
+        StressSummary = Total_Trigger.groupby(['Task', 'Group'])['Stress'].agg(['count', 'mean', 'std']).reset_index()
+        StressSummary.to_csv(fr'{self.path}\Participants\Dataset\Subjective\Stress_Summary.csv')
     def structure_data(self,df):
         """
         Function to structure task data from raw dataframe.
