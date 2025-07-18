@@ -1879,7 +1879,6 @@ class HumanDataExtraction():
             cols_to_drop = row.drop(labels=['Window', 'Overlap'])
             cols_to_drop = cols_to_drop[cols_to_drop > cols_to_drop_precent].index.tolist()
             cleaned_subset = subset.drop(columns=cols_to_drop)
-
             # Count rows before dropping NaNs
             Rows_Before_NaN = len(cleaned_subset)
 
@@ -1903,6 +1902,7 @@ class HumanDataExtraction():
 
             filename = f"Dataset_{int(window)}s_{int(overlap * 100)}.csv"
             filepath = os.path.join(cleaned_output_folder, filename)
+
             cleaned_subset.to_csv(filepath, index=False)
         nan_df = pd.DataFrame(nan_summary_rows)
         nan_df.to_csv(NaN_Path)
@@ -2088,10 +2088,9 @@ class HumanDataExtraction():
             x = np.arange(len(signal))
             slope, _, _, _, _ = stats.linregress(x, signal)
             return slope
-        # window_sizes = [5,10,30,60]
-        # overlaps = [0,0.5]
-        window_sizes = [5]
-        overlaps = [0.5]
+        window_sizes = [5,10,30,60]
+        overlaps = [0,0.5]
+
         total_dataset_dir = fr'{self.path}\Participants\Dataset\Dataset_By_Window\Raw_Data'
         os.makedirs(total_dataset_dir, exist_ok=True)
 
@@ -2286,7 +2285,6 @@ class HumanDataExtraction():
                                 'RSP_C_RRV_SD2': rsp_c_rrv.get("RRV_SD2", [np.nan])[0],
                                 'RSP_C_RRV_SD1': rsp_c_rrv.get("RRV_SD1", [np.nan])[0],
                                 'RSP_C_RRV_SD2SD1': rsp_c_rrv.get("RRV_SD2SD1", [np.nan])[0],
-                                'RSP_C_RRV_SampEn': rsp_c_rrv.get("RRV_SampEn", [np.nan])[0],
                                 'RSP_C_RRV_ApEn': rsp_c_rrv.get("RRV_ApEn", [np.nan])[0],
                                 'RSP_C_RRV_CVSD': rsp_c_rrv.get("RRV_CVSD", [np.nan])[0],
                                 'RSP_C_RRV_CVBB': rsp_c_rrv.get("RRV_CVBB", [np.nan])[0],
@@ -2309,7 +2307,6 @@ class HumanDataExtraction():
                                 'RSP_C_RRV_SD2': np.nan,
                                 'RSP_C_RRV_SD1': np.nan,
                                 'RSP_C_RRV_SD2SD1': np.nan,
-                                'RSP_C_RRV_SampEn': np.nan,
                                 'RSP_C_RRV_ApEn': np.nan,
                                 'RSP_C_RRV_CVSD': np.nan,
                                 'RSP_C_RRV_CVBB': np.nan,
@@ -2383,7 +2380,6 @@ class HumanDataExtraction():
                                 'RSP_D_RRV_SD2': rsp_d_rrv.get("RRV_SD2", [np.nan])[0],
                                 'RSP_D_RRV_SD1': rsp_d_rrv.get("RRV_SD1", [np.nan])[0],
                                 'RSP_D_RRV_SD2SD1': rsp_d_rrv.get("RRV_SD2SD1", [np.nan])[0],
-                                'RSP_D_RRV_SampEn': rsp_d_rrv.get("RRV_SampEn", [np.nan])[0],
                                 'RSP_D_RRV_ApEn': rsp_d_rrv.get("RRV_ApEn", [np.nan])[0],
                                 'RSP_D_RRV_CVSD': rsp_d_rrv.get("RRV_CVSD", [np.nan])[0],
                                 'RSP_D_RRV_CVBB': rsp_d_rrv.get("RRV_CVBB", [np.nan])[0],
@@ -2402,7 +2398,6 @@ class HumanDataExtraction():
                                 'RSP_D_RRV_RMSSD', 'RSP_D_RRV_MeanBB',
                                 'RSP_D_RRV_MedianBB',
                                 'RSP_D_RRV_MadBB', 'RSP_D_RRV_SD2', 'RSP_D_RRV_SD1', 'RSP_D_RRV_SD2SD1',
-                                'RSP_D_RRV_SampEn',
                                 'RSP_D_RRV_ApEn', 'RSP_D_RRV_CVSD', 'RSP_D_RRV_CVBB', 'RSP_D_RRV_MCVBB',
                                 'RSP_D_RRV_LF',
                                 'RSP_D_RRV_HF', 'RSP_D_RRV_LFHF', 'RSP_D_RRV_VLF', 'RSP_D_RRV_HFn', 'RSP_D_RRV_LFn'

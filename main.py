@@ -15,7 +15,7 @@ if __name__ == '__main__':
     if Make_Trigger:
         hdp = HumanDataPebl(DataPath)
         hdp.CreateDataset_PerformanceScore(ID=None,rangeID=True)
-        hdp.Make_Trigger_Table(ID=None,rangeID=True)
+        hdp.Make_Trigger_Table(ID=None,rangeID=False)
         hdp.CreateDataset_StressScore(ID=None,rangeID=True)
     #________________________________________________________SortData_______________________________________________________
     if Make_DataSet:
@@ -34,8 +34,7 @@ if __name__ == '__main__':
 
         if Dataset:
             hde.CleanData(ID=None,rangeID=True)
-            hde.CreateDataset(ID=None,rangeID=False)
-            hde.unite_datasets(input_folder=fr"{hde.path}\Participants\Dataset\Dataset_By_Window\Raw_Data")
+            hde.CreateDataset(ID=67,rangeID=True)
             hde.MissingData(ID=None, rangeID=False)
 
         if Combine:
@@ -58,12 +57,17 @@ if __name__ == '__main__':
     #________________________________________________________SortData_______________________________________________________
     if Analysis_DataSet:
         ad = AnalysisData(DataPath)
-        for no_breath in [False, True]:
-            for clases in [False, True]:
-                ad.ML_models_Classification(n_repeats=9, no_breath_data=no_breath, clases_3=clases)
-        ad.ML_models_Prediction()
-        ad.GroupDiffPlot()
         ad.StatisticalTest()
-        ad.BetaReggresion()
+        ad.GroupDiffPlot()
+        ad.ML_models_Prediction()
+        ad.ML_models_Classification(n_repeats=9, no_breath_data=True, clases_3=True)
+        ad.ML_models_Classification(n_repeats=9, no_breath_data=True, clases_3=False)
+        ad.ML_models_Classification(n_repeats=9, no_breath_data=False, clases_3=True)
+        ad.ML_models_Classification(n_repeats=9, no_breath_data=False, clases_3=False)
+        # ad.GroupDiffPlot()
+        # ad.StatisticalTest()
+        # ad.GroupDiffPlot()
+        # ad.Cor()
+        # ad.BetaReggresion()
 
 

@@ -33,7 +33,7 @@ class HumanDataPebl():
         for _, row in parlist_df.iterrows():
             ID = row['code']
             Group = row['Group']
-
+            print(fr'{ID} {Group}')
             # Define file paths
             CS_path = f'{pebl_path}\\battery\\stroop\\data\\{ID}\\CS-{ID}.csv'
             PA_path = f'{pebl_path}\\battery\\PASAT\\data\\{ID}\\PASAT-{ID}.csv'
@@ -81,6 +81,9 @@ class HumanDataPebl():
             available_columns = [col for col in column_order if col in Individual_performance.columns]
             Individual_performance = Individual_performance[available_columns]
             Individual_performance.drop(columns=['trial'])
+            Individual_performance['Task_level'] = (
+                    Individual_performance['Task'] + ' | ' + Individual_performance['Level']
+            )
             Individual_performance.to_csv(Individual_performance_path)
             RTSummary = Individual_performance.groupby(['ID','Group','Task','Level'])['RT'].agg(
                 ['count', 'mean']).reset_index()
@@ -93,7 +96,7 @@ class HumanDataPebl():
             AccuracySummary.to_csv(fr'{self.path}\Participants\{Group}_group\P_{ID}\Accuracy_Summary_{ID}.csv', index=False)
 
             # Add to list
-            performance_dfs.extend([PA_df, TC_df, CS_df])
+            performance_dfs.append(Individual_performance)
 
         # Combine all dataframes
         if performance_dfs:
@@ -128,8 +131,6 @@ class HumanDataPebl():
         else:
             print("No data was processed successfully.")
 
-
-
     def CreateDataset_StressScore(self,ID,rangeID):
         SubjectiveDataset_path=fr'{self.path}\Participants\Dataset\Subjective\SubjectiveDataset.csv'
         participants_path = f'{self.path}\\Participants\\participation management.csv'
@@ -144,6 +145,7 @@ class HumanDataPebl():
         for _,row in Participants_df.iterrows():
             ID    = row['code']
             Group = row['Group']
+            print(fr'{ID} {Group}')
             directory = fr'{self.path}\Participants\{Group}_group\P_{ID}'
             Trigger_df = pd.read_csv(fr'{directory}\Trigger_{ID}.csv')
             # ── Ratings table: keep only rows that actually carry stress / fatigue values ──
@@ -164,14 +166,41 @@ class HumanDataPebl():
             Trigger_df = Trigger_df.drop(columns=['Score','End','Start']).reset_index(drop=True)
             Trigger_df['Stress']=Trigger_S['Stress']
             start_stress=Trigger_S.iloc[0]
-            normalized_stress = (Trigger_S['Stress'] - start_stress) / start_stress
-            Trigger_df['Stress_N'] = normalized_stress
+            normalized_stress = (Trigger_df['Stress'] - start_stress['Stress'])
+            Trigger_df['Stress_S'] = normalized_stress
+            normalized_stress_std = (Trigger_df['Stress'] - start_stress['Stress']) / Trigger_df['Stress'].std()
+            Trigger_df['Stress_S_std'] = normalized_stress_std
             Trigger_df['Fatigue']=Trigger_F['Fatigue']
             start_fatigue=Trigger_F.iloc[0]
-            normalized_fatigue = (Trigger_F['Fatigue'] - start_fatigue) / start_fatigue
-            Trigger_df['Fatigue_N'] = normalized_fatigue
+            normalized_fatigue = (Trigger_F['Fatigue'] - start_fatigue['Fatigue'])
+            Trigger_df['Fatigue_S'] = normalized_fatigue
+            normalized_fatigue_std = (Trigger_df['Fatigue'] - start_fatigue['Fatigue']) / Trigger_df['Fatigue'].std()
+            Trigger_df['Fatigue_S_std'] = normalized_fatigue_std
             Trigger_df['Group']=Group
+            # Define task mapping for known prefixes
+            task_map = {
+                'PA': 'PASAT',
+                'TC': 'TwoColAdd',
+                'CS': 'Stroop',
+                'Break': 'Break',
+                'Start': 'Start',
+                'VAS': 'VAS'
+            }
+
+            # Extract prefix and level
+            Trigger_df[['Prefix', 'Level']] = Trigger_df['Task'].str.extract(r'([A-Za-z]+)_?(easy|medium|hard)?')
+            Trigger_df.rename(columns={'Task': 'Task_Level'}, inplace=True)
+            # Map prefix to full task name
+            Trigger_df['Task'] = Trigger_df['Prefix'].map(task_map).fillna(Trigger_df['Prefix'])
+
+            # Clean up
+            Trigger_df = Trigger_df.drop(columns=['Prefix'])
+
             Trigger_df.at[0,'Task']='Start'
+            # Replace all 'Task' values that contain 'Break' with the corresponding 'Task_Level' value from the same row
+            Trigger_df.loc[Trigger_df['Task'].str.contains('Break', na=False), 'Task'] = (
+                Trigger_df.loc[Trigger_df['Task'].str.contains('Break', na=False), 'Task_Level']
+            )
             Trigger_df['Task'] = Trigger_df['Task'].replace({
                 'Music1': 'Break1',
                 'Music2': 'Break2',
@@ -183,6 +212,38 @@ class HumanDataPebl():
                 'Breath4': 'Break4',
                 'Baseline': 'Break1'
             })
+            # --- Task Phase Simplification ---
+            Trigger_df['Task_phase1'] = Trigger_df['Task'].replace(
+                ['Break', 'Break1','Break2','Break3','Break4', 'Music', 'Breath'], 'Break')
+            # Define the replacement dictionary for specific Task_Level values
+            replace_dict = {
+                'Baseline': 'Break1',
+                'Biopac record': 'start',
+                'Music1': 'Break1',
+                'Breath1': 'Break1',
+                'Music2': 'Break2',
+                'Breath2': 'Break2',
+                'Music3': 'Break3',
+                'Breath3': 'Break3',
+                'Music4': 'Break4',
+                'Breath4': 'Break4',
+                'Break1': 'Break1',
+                'Break2': 'Break2',
+                'Break3': 'Break3',
+                'Break4': 'Break4',
+                'start': 'start'
+            }
+
+            # Replace Task_Level values according to the dictionary
+            Trigger_df['Task_phase2'] = Trigger_df['Task_Level'].replace(replace_dict)
+
+            # Identify rows where Task_Level was not found in the replacement dictionary
+            mask_missing = ~Trigger_df['Task_Level'].isin(replace_dict.keys())
+
+            # For those rows, construct Task_phase2 by combining Task and Level
+            Trigger_df.loc[mask_missing, 'Task_phase2'] = (
+                    Trigger_df.loc[mask_missing, 'Task'] + ' | ' + Trigger_df.loc[mask_missing, 'Level']
+            )
             Total_Trigger=pd.concat([Trigger_df,Total_Trigger])
         Total_Trigger.to_csv(SubjectiveDataset_path)
         StressSummary = Total_Trigger.groupby(['Task', 'Group'])['Stress'].agg(['count', 'mean', 'std']).reset_index()
@@ -228,8 +289,8 @@ class HumanDataPebl():
         final_df = pd.DataFrame(structured_data, columns=["Sub", "Task", "Start", "End"])
         final_df["Task"]=final_df["Task"].str.strip()
         # Merge CS_B1 and CS_B2 into CB_easy and CB_hard
-        final_df.loc[(final_df["Task"] == "CS_B1 3000") | (final_df["Task"] == "CS_B2 3000"), "Task"] = "CB_easy"
-        final_df.loc[(final_df["Task"] == "CS_B1 650") | (final_df["Task"] == "CS_B2 650"), "Task"] = "CB_hard"
+        final_df.loc[(final_df["Task"] == "CS_B1 3000") | (final_df["Task"] == "CS_B2 3000"), "Task"] = "CS_easy"
+        final_df.loc[(final_df["Task"] == "CS_B1 650") | (final_df["Task"] == "CS_B2 650"), "Task"] = "CS_hard"
 
         # Merge consecutive CB_easy and CB_hard tasks
         merged_rows = []
@@ -343,10 +404,10 @@ class HumanDataPebl():
             BR_ID=BR_df[BR_df["Sub"]==ID]
             VAS_faID=VAS_fa[VAS_fa["Sub"]==ID]
             VAS_stID=VAS_st[VAS_st["Sub"]==ID]
-
-            combined_ID = pd.concat([CS_ID, TC_ID, PA_ID,VAS_faID,VAS_stID,BR_ID], ignore_index=True)
             if ID == 42:
                 VAS_faID.loc[VAS_faID['Score'] == 'z', 'Score'] = 2.14
+            combined_ID = pd.concat([CS_ID, TC_ID, PA_ID,VAS_faID,VAS_stID,BR_ID], ignore_index=True)
+
             # -----------------------------------------------------BioPac-Start_time-----------------------------------------------------------------
             participant_path=fr'{self.path}\Participants\{Group}_group\P_{ID}'
             performance_Accuracy_path=fr'{participant_path}\Accuracy_Summary_{ID}.csv'
@@ -374,7 +435,7 @@ class HumanDataPebl():
             combined_ID["End"] = pd.to_datetime(combined_ID["End"], format="%H:%M:%S", errors='coerce').dt.time
             combined_ID["Start"] = combined_ID["Start"].apply(lambda x: (pd.to_datetime(str(x), format="%H:%M:%S") - pd.to_datetime(str(biopac_time), format="%H:%M:%S")).total_seconds())
             combined_ID["End"] = combined_ID["End"].apply(lambda x: (pd.to_datetime(str(x), format="%H:%M:%S") - pd.to_datetime(str(biopac_time), format="%H:%M:%S")).total_seconds())
-            if Group == 'control':
+            if Group == 'natural':
                 if ID==47:
                     combined_ID.loc[2, 'Task'] = 'Break1'
                     combined_ID.loc[12, 'Task'] = 'Break2'
@@ -440,41 +501,40 @@ class HumanDataPebl():
                                          (performance_RT['Level'] == 'hard'), 'mean'].values
             combined_ID.to_csv(participant_Trigger, index=False)
 
-        else:
-            CS_ID = CS_df[CS_df["Sub"] == ID]
-            TC_ID = TC_df[TC_df["Sub"] == ID]
-            PA_ID = PA_df[PA_df["Sub"] == ID]
-            BR_ID = BR_df[BR_df["Sub"] == ID]
-            VAS_st = VAS_st[VAS_st["Sub"] == ID]
-            VAS_fa = VAS_fa[VAS_fa["Sub"] == ID]
-
-            combined_ID = pd.concat([CS_ID, TC_ID, PA_ID, VAS_st, VAS_fa, BR_ID], ignore_index=True)
-
-            # Process BioPac start time
-            participant_path = fr'{self.path}\Participants\{Group}_group\P_{ID}'
-            participant_acq = fr'{participant_path}\P_{ID}.acq'
-            participant_Trigger = fr'{participant_path}\Trigger_{ID}.csv'
-
-            BioPac = bioread.read_file(participant_acq)
-            Start_time = pd.to_datetime(BioPac.event_markers[0].text).time().strftime('%H:%M:%S')
-
-            new_row = {'Sub': ID, 'Task': 'Biopac record', 'Start': Start_time, 'End': None}
-            combined_ID = combined_ID._append(new_row, ignore_index=True)
-
-            # Processing timestamps
-            combined_ID = combined_ID.sort_values(by='Start')
-            biopac_time = combined_ID.loc[combined_ID["Task"] == "Biopac record", "Start"].min()
-            combined_ID = combined_ID[combined_ID["Start"] >= biopac_time].reset_index(drop=True)
-
-            combined_ID["Start"] = pd.to_datetime(combined_ID["Start"], format="%H:%M:%S", errors="coerce").dt.time
-            combined_ID["End"] = pd.to_datetime(combined_ID["End"], format="%H:%M:%S", errors="coerce").dt.time
-
-            combined_ID["Start"] = combined_ID["Start"].apply(lambda x: (
-                        pd.to_datetime(str(x), format="%H:%M:%S") - pd.to_datetime(str(biopac_time),
-                                                                                   format="%H:%M:%S")).total_seconds())
-            combined_ID["End"] = combined_ID["End"].apply(lambda x: (
-                        pd.to_datetime(str(x), format="%H:%M:%S") - pd.to_datetime(str(biopac_time),
-                                                                                   format="%H:%M:%S")).total_seconds())
-
-            combined_ID.to_csv(participant_Trigger, index=False)
+        # else:
+        #     CS_ID = CS_df[CS_df["Sub"] == ID]
+        #     TC_ID = TC_df[TC_df["Sub"] == ID]
+        #     PA_ID = PA_df[PA_df["Sub"] == ID]
+        #     BR_ID = BR_df[BR_df["Sub"] == ID]
+        #     VAS_st = VAS_st[VAS_st["Sub"] == ID]
+        #     VAS_fa = VAS_fa[VAS_fa["Sub"] == ID]
+        #
+        #     combined_ID = pd.concat([CS_ID, TC_ID, PA_ID, VAS_st, VAS_fa, BR_ID], ignore_index=True)
+        #
+        #     # Process BioPac start time
+        #     participant_path = fr'{self.path}\Participants\{Group}_group\P_{ID}'
+        #     participant_acq = fr'{participant_path}\P_{ID}.acq'
+        #     participant_Trigger = fr'{participant_path}\Trigger_{ID}.csv'
+        #
+        #     BioPac = bioread.read_file(participant_acq)
+        #     Start_time = pd.to_datetime(BioPac.event_markers[0].text).time().strftime('%H:%M:%S')
+        #
+        #     new_row = {'Sub': ID, 'Task': 'Biopac record', 'Start': Start_time, 'End': None}
+        #     combined_ID = combined_ID._append(new_row, ignore_index=True)
+        #
+        #     # Processing timestamps
+        #     combined_ID = combined_ID.sort_values(by='Start')
+        #     biopac_time = combined_ID.loc[combined_ID["Task"] == "Biopac record", "Start"].min()
+        #     combined_ID = combined_ID[combined_ID["Start"] >= biopac_time].reset_index(drop=True)
+        #
+        #     combined_ID["Start"] = pd.to_datetime(combined_ID["Start"], format="%H:%M:%S", errors="coerce").dt.time
+        #     combined_ID["End"] = pd.to_datetime(combined_ID["End"], format="%H:%M:%S", errors="coerce").dt.time
+        #
+        #     combined_ID["Start"] = combined_ID["Start"].apply(lambda x: (
+        #                 pd.to_datetime(str(x), format="%H:%M:%S") - pd.to_datetime(str(biopac_time),
+        #                                                                            format="%H:%M:%S")).total_seconds())
+        #     combined_ID["End"] = combined_ID["End"].apply(lambda x: (
+        #                 pd.to_datetime(str(x), format="%H:%M:%S") - pd.to_datetime(str(biopac_time),
+        #                                                                            format="%H:%M:%S")).total_seconds())
+        #     combined_ID.to_csv(participant_Trigger, index=False)
 
