@@ -1,4 +1,5 @@
 import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
 import bioread
 import neurokit2 as nk
 from scipy.signal import spectrogram
@@ -6,23 +7,19 @@ import matplotlib.cm as cm
 import numpy as np
 from scipy.signal import medfilt
 import seaborn as sns
-from tqdm import tqdm
 import os
 from scipy.stats import linregress
 import pandas as pd
 from sklearn.linear_model import LinearRegression
-import warnings
-import logging
-import sys
 from tqdm import tqdm
 from sklearn.ensemble import RandomForestRegressor
 from scipy import stats
-# Press the green button in the gutter to run the script.
 class HumanDataExtraction():
 
-    def __init__(self,Directory):
+    def __init__(self,Directory,ex_col):
         self.path = Directory
         self.sorted_DATA = pd.DataFrame()
+        self.ex_col=ex_col
 
     def Check_MinMaxVlaue(self, ID, rangeID):
         Participants_path = f'{self.path}\\Participants\\participation management.csv'
@@ -1823,7 +1820,7 @@ class HumanDataExtraction():
         data_path = fr'{self.path}\Participants\Dataset\Dataset_By_Window\Raw_Data\Dataset_total.csv'
         summary_0_1_path = fr'{self.path}\Participants\Dataset\Missing_Data\Missing_Data_0_1.csv'
         summary_path = fr'{self.path}\Participants\Dataset\Missing_Data\Missing_Data_no_0_1.csv'
-        cleaned_output_folder = fr'{self.path}\Participants\Dataset\Dataset_By_Window\Clean_Data'
+        cleaned_output_folder = fr'{self.path}\Participants\Dataset\Dataset_By_Window\Clean_Data_NoMissingData'
         cols_to_drop_precent=0.15
         NaN_Path = fr'{self.path}\Participants\Dataset\Missing_Data\NaN_prec{cols_to_drop_precent}.csv'
         nan_summary_rows = []  # initialize list outside the loop
@@ -1833,13 +1830,11 @@ class HumanDataExtraction():
         data_df = pd.read_csv(data_path)
         data_df_group=data_df.copy()
         # Columns to exclude from missing frequency calculation
-        exclude_cols = ['Class', 'Test_Type', 'Level', 'Accuracy', 'RT', 'Stress', 'Fatigue',
-                        'ID', 'Group', 'Time']
         rows = []
 
         # Step 1: Calculate missing frequencies by window and overlap
         for (window, overlap), group in data_df_group.groupby(["Window", "Overlap"]):
-            group_clean = group.drop(columns=[col for col in exclude_cols if col in group.columns])
+            group_clean = group.drop(columns=[col for col in self.ex_col if col in group.columns])
             nan_frequencies = group_clean.isna().sum() / len(group_clean)
             nan_frequencies["Window"] = window
             nan_frequencies["Overlap"] = overlap
@@ -1884,7 +1879,7 @@ class HumanDataExtraction():
 
             # Drop rows with any NaNs
             # Drop rows with NaNs in feature columns only (not in excluded meta columns)
-            feature_cols = [col for col in cleaned_subset.columns if col not in exclude_cols]
+            feature_cols = [col for col in cleaned_subset.columns if col not in self.ex_col]
             cleaned_subset = cleaned_subset.dropna(subset=feature_cols)
             # Count rows after dropping NaNs
             Rows_After_NaN = len(cleaned_subset)
@@ -2077,11 +2072,16 @@ class HumanDataExtraction():
             tr_f = future_rows.iloc[1] if not pd.isna(future_rows.iloc[0]["Stress"]) else future_rows.iloc[
                 0]
             stress = tr_s.get("Stress", np.nan)
+            stress_N = tr_s.get("Score_Norm", np.nan)
+            stress_D = tr_s.get("Score_Delta", np.nan)
             fatigue = tr_f.get("Fatigue", np.nan)
+            fatigue_N = tr_f.get("Score_Norm", np.nan)
+            fatigue_D = tr_f.get("Score_Delta", np.nan)
+
             match = Performance_df[(Performance_df["Start"] <= t) & (Performance_df["End"] >= t)]
             accuracy = match["Accuracy_Mean"].values[0] if not match.empty else np.nan
             rt = match["RT_Mean"].values[0] if not match.empty else np.nan
-            return stress, fatigue, accuracy, rt
+            return stress,stress_N,stress_D,fatigue,fatigue_N,fatigue_D, accuracy, rt
         def compute_slope(signal):
             if len(signal) < 2 or np.all(np.isnan(signal)):
                 return np.nan
@@ -2118,7 +2118,6 @@ class HumanDataExtraction():
                     Group = row['Group']
                     directory = fr'{self.path}\Participants\{Group}_group\P_{ID}'
 
-
                     # ── Load data ─────────────────────────────────────
                     Trigger_df = pd.read_csv(fr'{directory}\Trigger_{ID}.csv')
                     Trigger_df["Stress"] = np.where(Trigger_df["Task"] == "VAS_Stress", Trigger_df["Score"],
@@ -2130,7 +2129,7 @@ class HumanDataExtraction():
                         "Start").reset_index(drop=True)
                     rating_df = rating_df.drop(columns=['Score', 'End'])
 
-                    relevant_tasks = ['Task', 'CB_easy', 'CB_hard', 'PA_easy', 'PA_medium', 'PA_hard',
+                    relevant_tasks = ['Task', 'CS_easy', 'CS_hard', 'PA_easy', 'PA_medium', 'PA_hard',
                                       'TC_easy',
                                       'TC_hard']
                     Performance_df = Trigger_df[Trigger_df['Task'].isin(relevant_tasks)]
@@ -2451,12 +2450,11 @@ class HumanDataExtraction():
                             print(f"RSP_d_features error: {e}")
                             rsp_d_features = {}
 
-                        # חיבור הכל
                         rsp_d_features.update(rrv_d_features)
                         rsp_d_features.update(rvt_d_features)
 
                         center_time = (i + window_samples / 2)
-                        stress, fatigue, accuracy, rt = trigger_attrs(center_time)
+                        stress,stress_N,stress_D,fatigue,fatigue_N,fatigue_D, accuracy, rt = trigger_attrs(center_time)
                         cls, level, test_type = label_window(center_time)
 
                         row_data = {
@@ -2473,7 +2471,17 @@ class HumanDataExtraction():
                             'Accuracy': accuracy,
                             'RT': rt,
                             'Stress': stress,
-                            'Fatigue': fatigue
+                            'Stress_N': stress_N,
+                            'Stress_D': stress_D,
+                            'Fatigue': fatigue,
+                            'Fatigue_N': fatigue_N,
+                            'Fatigue_D': fatigue_D,
+                            'Efficiency_S':(accuracy-stress_D)/np.sqrt(2),
+                            'Efficiency_F': (accuracy - fatigue_D)/np.sqrt(2),
+                            'Involvement_S': (accuracy + stress_D)/np.sqrt(2),
+                            'Involvement_F': (accuracy + fatigue_D)/np.sqrt(2),
+                            'SAT': accuracy / rt if rt > 0 else np.nan,
+                            'IES': rt / accuracy if accuracy > 0 else np.nan
                         }
 
                         Data_df = pd.concat([Data_df, pd.DataFrame([row_data])], ignore_index=True)
@@ -2491,5 +2499,400 @@ class HumanDataExtraction():
         Data_Total_df=Data_Total_df.sort_values(by=['Window','Overlap','ID'])
         Data_Total_df.to_csv(save_path, index=False)
         print(f"✅ Saved: {save_name}")
+
+
+
+
+    def CorrelationMatrixAndReduce(self):
+        """
+        Combined function:
+        1. Reads all CSV files from Clean_Data.
+        2. Creates correlation matrices per signal type, saves CSV + heatmap.
+        3. Extracts all feature pairs with correlation > 0.80 per signal and saves per-file and aggregated CSVs.
+        4. Drops one column from each highly correlated pair (per signal) and saves a reduced version of the file
+           into a new folder Clean_Data_NoHighCorr.
+        5. Also builds correlation outputs for the reduced dataset, including per-signal and all-signals.
+        """
+
+        # =======================
+        # Folders setup
+        # =======================
+        BASE_DIR = r"C:\Users\e3bom\Desktop\Human Bio Signals Analysis\Participants\Dataset\Dataset_By_Window"
+        DATASET_ROOT = r"C:\Users\e3bom\Desktop\Human Bio Signals Analysis\Participants\Dataset"
+
+        INPUT_DIR = os.path.join(BASE_DIR, "Clean_Data_NoMissingData")
+        OUTPUT_REDUCED = os.path.join(BASE_DIR, "Clean_Data")
+
+        # correlation outputs at DATASET_ROOT
+        OUTPUT_BASE = os.path.join(DATASET_ROOT, "Features_Cor")
+        OUTPUT_DIR_C = os.path.join(OUTPUT_BASE, "cor_data")
+        OUTPUT_DIR_P = os.path.join(OUTPUT_BASE, "Plots")
+        OUTPUT_DIR_T = os.path.join(OUTPUT_BASE, "threshold0.8")  # per-signal pairs
+        OUTPUT_DIR_S = os.path.join(OUTPUT_BASE, "summaries")
+        OUTPUT_DIR_T_ALL = os.path.join(OUTPUT_BASE, "threshold0.8_all_signals")  # all signals per file on original
+
+        # reduced correlation outputs at DATASET_ROOT
+        OUTPUT_BASE_REDUCED = os.path.join(DATASET_ROOT, "Features_Cor_Reduced")
+        OUTPUT_DIR_C_R = os.path.join(OUTPUT_BASE_REDUCED, "cor_data")
+        OUTPUT_DIR_P_R = os.path.join(OUTPUT_BASE_REDUCED, "Plots")
+
+        # all-signals on reduced at DATASET_ROOT
+        OUTPUT_BASE_ALLSIG = os.path.join(DATASET_ROOT, "Features_Cor_Reduced_AllSignals")
+        OUTPUT_DIR_C_ALL = os.path.join(OUTPUT_BASE_ALLSIG, "cor_data")
+        OUTPUT_DIR_P_ALL = os.path.join(OUTPUT_BASE_ALLSIG, "Plots")
+        OUTPUT_DIR_T_ALL_R = os.path.join(OUTPUT_BASE_ALLSIG, "threshold0.8")  # all signals per file on reduced
+
+        for d in [
+            OUTPUT_BASE, OUTPUT_DIR_C, OUTPUT_DIR_P, OUTPUT_DIR_T, OUTPUT_DIR_S, OUTPUT_DIR_T_ALL,
+            OUTPUT_REDUCED,
+            OUTPUT_BASE_REDUCED, OUTPUT_DIR_C_R, OUTPUT_DIR_P_R,
+            OUTPUT_BASE_ALLSIG, OUTPUT_DIR_C_ALL, OUTPUT_DIR_P_ALL, OUTPUT_DIR_T_ALL_R
+        ]:
+            os.makedirs(d, exist_ok=True)
+
+        SIGNAL_PREFIXES = ["HRV_", "EDA_", "RSP_", "ECG_", "RSP_C_", "RSP_D_"]
+        CORR_THRESHOLD = 0.80
+        USE_ABS = True  # use absolute correlation for pair detection and dropping
+
+        aggregated_by_signal = {}
+
+        # =======================
+        # Pass 1: original data
+        # =======================
+        for fname in os.listdir(INPUT_DIR):
+            if not fname.endswith(".csv"):
+                continue
+
+            fpath = os.path.join(INPUT_DIR, fname)
+            try:
+                df = pd.read_csv(fpath)
+            except Exception as e:
+                print(f"Skipping {fname} - cannot read: {e}")
+                continue
+
+            signal_cols = [c for c in df.columns if any(c.startswith(pref) for pref in SIGNAL_PREFIXES)]
+            if len(signal_cols) < 2:
+                out_path = os.path.join(OUTPUT_REDUCED, fname)
+                df.to_csv(out_path, index=False)
+                print(f"Saved (no signal columns): {out_path}")
+                continue
+
+            numeric_df = df[signal_cols].select_dtypes(include=["number"])
+            if numeric_df.empty:
+                out_path = os.path.join(OUTPUT_REDUCED, fname)
+                df.to_csv(out_path, index=False)
+                print(f"Saved (no numeric signal columns): {out_path}")
+                continue
+
+            # all signals pairs list (original) for reference
+            base_all = os.path.splitext(fname)[0]
+            corr_all_full = numeric_df.corr().abs() if USE_ABS else numeric_df.corr()
+            corr_upper_all = corr_all_full.where(np.triu(np.ones(corr_all_full.shape), k=1).astype(bool))
+            pairs_all = corr_upper_all.stack().reset_index()
+            pairs_all.columns = ["Feature_A", "Feature_B", "Correlation"]
+            pairs_all_strong = pairs_all[pairs_all["Correlation"] > CORR_THRESHOLD].copy()
+            if not pairs_all_strong.empty:
+                out_all_path = os.path.join(OUTPUT_DIR_T_ALL, f"{base_all}_ALLSIGNALS_HighCorrPairs_gt080.csv")
+                pairs_all_strong.to_csv(out_all_path, index=False)
+                print(f"Saved all-signals high-corr pairs (original): {out_all_path}")
+
+            signal_types = sorted(set([c.split("_")[0] for c in numeric_df.columns]))
+            variance = numeric_df.var(axis=0, skipna=True)
+            nan_count = numeric_df.isna().sum(axis=0)
+            cols_to_drop = set()
+
+            for signal in signal_types:
+                cols = [c for c in numeric_df.columns if c.startswith(signal + "_")]
+                if len(cols) < 2:
+                    continue
+
+                # per-signal folders
+                signal_dirC = os.path.join(OUTPUT_DIR_C, signal)
+                signal_dirP = os.path.join(OUTPUT_DIR_P, signal)
+                signal_dirT = os.path.join(OUTPUT_DIR_T, signal)
+                signal_dirS = os.path.join(OUTPUT_DIR_S, signal)
+                for d in [signal_dirC, signal_dirP, signal_dirT, signal_dirS]:
+                    os.makedirs(d, exist_ok=True)
+
+                corr_matrix = numeric_df[cols].corr()
+                corr_eval = corr_matrix.abs() if USE_ABS else corr_matrix
+
+                base = os.path.splitext(fname)[0]
+                corr_csv_path = os.path.join(signal_dirC, f"{base}_{signal}_Correlation.csv")
+                corr_matrix.to_csv(corr_csv_path, index=True)
+
+                # build pairs, decide kept and dropped, and update threshold0.8 file
+                corr_upper = corr_eval.where(np.triu(np.ones(corr_eval.shape), k=1).astype(bool))
+                pairs_df = corr_upper.stack().reset_index()
+                pairs_df.columns = ["Feature_A", "Feature_B", "Correlation"]
+                strong_pairs = pairs_df[pairs_df["Correlation"] > CORR_THRESHOLD].copy()
+
+                decided_drops_for_signal = set()
+                kept_for_signal = set(cols)
+
+                if not strong_pairs.empty:
+                    kept_list, dropped_list = [], []
+                    for _, row in strong_pairs.iterrows():
+                        a, b = row["Feature_A"], row["Feature_B"]
+                        var_a, var_b = variance[a], variance[b]
+                        if var_a > var_b:
+                            keep, drop = a, b
+                        elif var_b > var_a:
+                            keep, drop = b, a
+                        elif nan_count[a] < nan_count[b]:
+                            keep, drop = a, b
+                        elif nan_count[b] < nan_count[a]:
+                            keep, drop = b, a
+                        else:
+                            keep, drop = (a, b) if a < b else (b, a)
+
+                        kept_list.append(keep)
+                        dropped_list.append(drop)
+                        cols_to_drop.add(drop)
+                        decided_drops_for_signal.add(drop)
+
+                    # update kept set
+                    kept_for_signal = set(cols) - decided_drops_for_signal
+
+                    # extend strong_pairs with kept/dropped and save to threshold0.8
+                    strong_pairs["Kept_Feature"] = kept_list
+                    strong_pairs["Dropped_Feature"] = dropped_list
+                    strong_pairs.insert(0, "Signal", signal)
+                    strong_pairs.insert(1, "Source_File", fname)
+
+                    pairs_path = os.path.join(
+                        signal_dirT,
+                        f"{base}_{signal}_HighCorrPairs_gt{str(CORR_THRESHOLD).replace('.','')}.csv"
+                    )
+                    strong_pairs.to_csv(pairs_path, index=False)
+                    aggregated_by_signal.setdefault(signal, []).append(strong_pairs)
+
+                # plot heatmap with tick coloring for kept vs dropped
+                plt.figure(figsize=(10, 8))
+                ax = sns.heatmap(
+                    corr_matrix,
+                    annot=True,
+                    fmt=".2f",
+                    cmap="coolwarm",
+                    cbar=True,
+                    square=True,
+                    linewidths=0.5
+                )
+                plt.title(f"Correlation Matrix - {signal} ({fname})", fontsize=14)
+
+                def _color_ticks(axis_ticks):
+                    for t in axis_ticks:
+                        name = t.get_text()
+                        if name in kept_for_signal:
+                            t.set_color("tab:green")
+                            t.set_fontweight("bold")
+                        elif name in decided_drops_for_signal:
+                            t.set_color("tab:gray")
+                        else:
+                            t.set_color("black")
+
+                _color_ticks(ax.get_xticklabels())
+                _color_ticks(ax.get_yticklabels())
+
+                handles = [
+                    Patch(facecolor="white", edgecolor="tab:green", label="Kept feature"),
+                    Patch(facecolor="white", edgecolor="tab:gray", label="Dropped feature (> 0.8)")
+                ]
+                ax.legend(handles=handles, loc="upper right", frameon=True)
+                plt.tight_layout()
+
+                plot_path = os.path.join(signal_dirP, f"{base}_{signal}_Correlation.png")
+                plt.savefig(plot_path, dpi=300)
+                plt.close()
+
+                print(f"Saved correlation matrix: {corr_csv_path}")
+                print(f"Saved plot: {plot_path}")
+
+            # drop and save reduced file
+            if cols_to_drop:
+                df_reduced = df.drop(columns=sorted(cols_to_drop), errors="ignore")
+                print(f"{fname}: Dropped {len(cols_to_drop)} columns due to high correlation > {CORR_THRESHOLD}")
+            else:
+                df_reduced = df
+                print(f"{fname}: No columns dropped")
+
+            out_path = os.path.join(OUTPUT_REDUCED, fname)
+            df_reduced.to_csv(out_path, index=False)
+            print(f"Saved reduced dataset: {out_path}")
+
+        # aggregated summaries per signal
+        for signal, chunks in aggregated_by_signal.items():
+            all_signal_df = pd.concat(chunks, ignore_index=True)
+            summary_dir = os.path.join(OUTPUT_DIR_S, signal)
+            os.makedirs(summary_dir, exist_ok=True)
+            summary_path = os.path.join(summary_dir, f"{signal}_HighCorrPairs_AllFiles.csv")
+            all_signal_df.to_csv(summary_path, index=False)
+            print(f"Saved aggregated summary for {signal}: {summary_path}")
+
+        # =======================
+        # Pass 2: reduced data - per signal
+        # =======================
+        for fname in os.listdir(OUTPUT_REDUCED):
+            if not fname.endswith(".csv"):
+                continue
+
+            fpath_r = os.path.join(OUTPUT_REDUCED, fname)
+            try:
+                df_r = pd.read_csv(fpath_r)
+            except Exception as e:
+                print(f"Skipping reduced {fname} - cannot read: {e}")
+                continue
+
+            signal_cols_r = [c for c in df_r.columns if any(c.startswith(pref) for pref in SIGNAL_PREFIXES)]
+            if len(signal_cols_r) < 2:
+                print(f"{fname}: no signal columns found in reduced dataset")
+                continue
+
+            numeric_df_r = df_r[signal_cols_r].select_dtypes(include=["number"])
+            if numeric_df_r.empty:
+                print(f"{fname}: no numeric signal columns in reduced dataset")
+                continue
+
+            signal_types_r = sorted(set([c.split("_")[0] for c in numeric_df_r.columns]))
+            base_r = os.path.splitext(fname)[0]
+
+            for signal in signal_types_r:
+                cols_r = [c for c in numeric_df_r.columns if c.startswith(signal + "_")]
+                if len(cols_r) < 2:
+                    continue
+
+                signal_dirC_r = os.path.join(OUTPUT_DIR_C_R, signal)
+                signal_dirP_r = os.path.join(OUTPUT_DIR_P_R, signal)
+                os.makedirs(signal_dirC_r, exist_ok=True)
+                os.makedirs(signal_dirP_r, exist_ok=True)
+
+                corr_r = numeric_df_r[cols_r].corr()
+
+                corr_csv_path_r = os.path.join(signal_dirC_r, f"{base_r}_{signal}_Correlation.csv")
+                corr_r.to_csv(corr_csv_path_r, index=True)
+
+                plt.figure(figsize=(10, 8))
+                sns.heatmap(corr_r, annot=True, fmt=".2f", cmap="coolwarm", cbar=True, square=True, linewidths=0.5)
+                plt.title(f"Correlation Matrix - {signal} (Reduced: {fname})", fontsize=14)
+                plt.tight_layout()
+                plot_path_r = os.path.join(signal_dirP_r, f"{base_r}_{signal}_Correlation.png")
+                plt.savefig(plot_path_r, dpi=300)
+                plt.close()
+
+                print(f"Saved reduced correlation matrix: {corr_csv_path_r}")
+                print(f"Saved reduced plot: {plot_path_r}")
+
+        # =======================
+        # Pass 3: reduced data - all signals per file and global
+        # =======================
+        aggregated_rows = []
+        all_signal_cols_union = set()
+
+        for fname in os.listdir(OUTPUT_REDUCED):
+            if not fname.endswith(".csv"):
+                continue
+
+            fpath_r = os.path.join(OUTPUT_REDUCED, fname)
+            try:
+                df_r = pd.read_csv(fpath_r)
+            except Exception as e:
+                print(f"Skipping all-signals reduced {fname} - cannot read: {e}")
+                continue
+
+            signal_cols_all = [c for c in df_r.columns if any(c.startswith(pref) for pref in SIGNAL_PREFIXES)]
+            if len(signal_cols_all) < 2:
+                print(f"{fname}: < 2 signal columns in reduced dataset for all-signals corr")
+                continue
+
+            numeric_all = df_r[signal_cols_all].select_dtypes(include=["number"])
+            if numeric_all.empty or numeric_all.shape[1] < 2:
+                print(f"{fname}: no numeric multi-signal columns in reduced dataset")
+                continue
+
+            # per-file all-signals matrix and plot
+            base_r = os.path.splitext(fname)[0]
+            corr_all = numeric_all.corr()
+            corr_csv_path_all = os.path.join(OUTPUT_DIR_C_ALL, f"{base_r}_ALLSIGNALS_Correlation.csv")
+            corr_all.to_csv(corr_csv_path_all, index=True)
+
+            plt.figure(figsize=(10, 8))
+            sns.heatmap(corr_all, annot=True, fmt=".2f", cmap="coolwarm", cbar=True, square=True, linewidths=0.5)
+            plt.title(f"Correlation Matrix - ALL SIGNALS (Reduced: {fname})", fontsize=14)
+            plt.tight_layout()
+            plot_path_all = os.path.join(OUTPUT_DIR_P_ALL, f"{base_r}_ALLSIGNALS_Correlation.png")
+            plt.savefig(plot_path_all, dpi=300)
+            plt.close()
+
+            print(f"Saved reduced all-signals corr CSV: {corr_csv_path_all}")
+            print(f"Saved reduced all-signals plot: {plot_path_all}")
+
+            # per-file all-signals high corr pairs on reduced data, saved with kept/dropped too
+            corr_all_abs = corr_all.abs() if USE_ABS else corr_all
+            corr_upper_all_r = corr_all_abs.where(np.triu(np.ones(corr_all_abs.shape), k=1).astype(bool))
+            pairs_all_r = corr_upper_all_r.stack().reset_index()
+            pairs_all_r.columns = ["Feature_A", "Feature_B", "Correlation"]
+            pairs_all_strong_r = pairs_all_r[pairs_all_r["Correlation"] > CORR_THRESHOLD].copy()
+            if not pairs_all_strong_r.empty:
+                # compute kept vs dropped using variance/NaN from numeric_all
+                variance_r = numeric_all.var(axis=0, skipna=True)
+                nan_count_r = numeric_all.isna().sum(axis=0)
+                kept_l, drop_l = [], []
+                for _, row in pairs_all_strong_r.iterrows():
+                    a, b = row["Feature_A"], row["Feature_B"]
+                    var_a, var_b = variance_r.get(a, np.nan), variance_r.get(b, np.nan)
+                    if not np.isnan(var_a) and not np.isnan(var_b):
+                        if var_a > var_b:
+                            keep, drop = a, b
+                        elif var_b > var_a:
+                            keep, drop = b, a
+                        else:
+                            # tie on variance, check NaN
+                            na_a, na_b = nan_count_r.get(a, np.inf), nan_count_r.get(b, np.inf)
+                            if na_a < na_b:
+                                keep, drop = a, b
+                            elif na_b < na_a:
+                                keep, drop = b, a
+                            else:
+                                keep, drop = (a, b) if a < b else (b, a)
+                    else:
+                        keep, drop = (a, b) if a < b else (b, a)
+                    kept_l.append(keep)
+                    drop_l.append(drop)
+                pairs_all_strong_r["Kept_Feature"] = kept_l
+                pairs_all_strong_r["Dropped_Feature"] = drop_l
+
+                out_all_r_path = os.path.join(OUTPUT_DIR_T_ALL_R, f"{base_r}_ALLSIGNALS_HighCorrPairs_gt080.csv")
+                os.makedirs(os.path.dirname(out_all_r_path), exist_ok=True)
+                pairs_all_strong_r.to_csv(out_all_r_path, index=False)
+                print(f"Saved all-signals high-corr pairs (reduced): {out_all_r_path}")
+
+            aggregated_rows.append(numeric_all)
+            all_signal_cols_union.update(numeric_all.columns.tolist())
+
+        # global all-signals correlation across all reduced files
+        if aggregated_rows:
+            all_cols_sorted = sorted(all_signal_cols_union)
+            aligned = [df_chunk.reindex(columns=all_cols_sorted) for df_chunk in aggregated_rows]
+            big_df = pd.concat(aligned, axis=0, ignore_index=True)
+            big_df = big_df.dropna(axis=1, how="all")
+            if big_df.shape[1] >= 2:
+                corr_global = big_df.corr()
+                global_csv = os.path.join(OUTPUT_DIR_C_ALL, "ALLFILES_ALLSIGNALS_Correlation.csv")
+                corr_global.to_csv(global_csv, index=True)
+
+                plt.figure(figsize=(12, 10))
+                sns.heatmap(corr_global, annot=False, fmt=".2f", cmap="coolwarm", cbar=True, square=False, linewidths=0.3)
+                plt.title("Correlation Matrix - ALL SIGNALS across ALL REDUCED FILES", fontsize=14)
+                plt.tight_layout()
+                global_plot = os.path.join(OUTPUT_DIR_P_ALL, "ALLFILES_ALLSIGNALS_Correlation.png")
+                plt.savefig(global_plot, dpi=300)
+                plt.close()
+
+                print(f"Saved GLOBAL all-signals corr CSV: {global_csv}")
+                print(f"Saved GLOBAL all-signals plot: {global_plot}")
+            else:
+                print("GLOBAL all-signals corr: not enough columns after alignment.")
+        else:
+            print("No reduced files accumulated for GLOBAL all-signals correlation.")
 
 

@@ -7,6 +7,12 @@ from AnalysisData import AnalysisData
 if __name__ == '__main__':
     #DataPath = r'C:\Users\97254\OneDrive\Desktop\Human Bio Signals Analysis'
     DataPath = r'C:\Users\e3bom\Desktop\Human Bio Signals Analysis'
+    ex_col=['Class', 'Test_Type', 'Level', 'Accuracy','RT', 'Stress','Stress_N','Stress_D', 'Fatigue',
+            'Fatigue_N','Fatigue_D','ID','Efficiency_S','Efficiency_F', 'Involvement_S', 'Involvement_F',
+            'SAT', 'IES','Group', 'Time','Window','Overlap']
+    Prediction_Targets=['Involvement_S','Accuracy','SAT', 'IES']
+    Prediction_Targets1=['Stress','Stress_N','Stress_D','Fatigue','Fatigue_N','Fatigue_D','Efficiency_S','Efficiency_F', 'Involvement_F',]
+    miss=['Involvement_F_Base']
     Make_Trigger=False
     Make_DataSet=False
     Analysis_DataSet=True
@@ -15,7 +21,7 @@ if __name__ == '__main__':
     if Make_Trigger:
         hdp = HumanDataPebl(DataPath)
         hdp.CreateDataset_PerformanceScore(ID=None,rangeID=True)
-        hdp.Make_Trigger_Table(ID=None,rangeID=False)
+        hdp.Make_Trigger_Table(ID=None,rangeID=True)
         hdp.CreateDataset_StressScore(ID=None,rangeID=True)
     #________________________________________________________SortData_______________________________________________________
     if Make_DataSet:
@@ -27,15 +33,16 @@ if __name__ == '__main__':
         RSP = False
         EDA = False
 
-        hde = HumanDataExtraction(DataPath)
+        hde = HumanDataExtraction(DataPath,ex_col)
         if PreProcessing:
             hde.Check_MedianFilter(ID=None,rangeID=False)
             hde.Check_MinMaxVlaue(ID=None,rangeID=False)
 
         if Dataset:
             hde.CleanData(ID=None,rangeID=True)
-            hde.CreateDataset(ID=67,rangeID=True)
+            hde.CreateDataset(ID=None,rangeID=True)
             hde.MissingData(ID=None, rangeID=False)
+            hde.CorrelationMatrixAndReduce()
 
         if Combine:
             hde.AX_plot_signals_VAS(ID=52,rangeID=True,Signals_plot=True,Cor_plot=False)
@@ -56,18 +63,14 @@ if __name__ == '__main__':
 
     #________________________________________________________SortData_______________________________________________________
     if Analysis_DataSet:
-        ad = AnalysisData(DataPath)
-        ad.StatisticalTest()
-        ad.GroupDiffPlot()
-        ad.ML_models_Prediction()
+        ad = AnalysisData(DataPath,ex_col,Prediction_Targets)
+        # ad.StatisticalTest()
+        # ad.GroupDiffPlot()
+        # ad.ML_models_Prediction()
         ad.ML_models_Classification(n_repeats=9, no_breath_data=True, clases_3=True)
         ad.ML_models_Classification(n_repeats=9, no_breath_data=True, clases_3=False)
         ad.ML_models_Classification(n_repeats=9, no_breath_data=False, clases_3=True)
         ad.ML_models_Classification(n_repeats=9, no_breath_data=False, clases_3=False)
-        # ad.GroupDiffPlot()
-        # ad.StatisticalTest()
-        # ad.GroupDiffPlot()
-        # ad.Cor()
-        # ad.BetaReggresion()
+
 
 

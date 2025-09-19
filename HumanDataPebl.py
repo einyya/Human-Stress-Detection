@@ -3,6 +3,7 @@ import pandas as pd
 import bioread
 import numpy as np
 
+
 # Press the green button in the gutter to run the script.
 class HumanDataPebl():
     def __init__(self,Directory):
@@ -35,6 +36,23 @@ class HumanDataPebl():
             Group = row['Group']
             print(fr'{ID} {Group}')
             # Define file paths
+            participant_acq = fr'{self.path}\Participants\{Group}_group\P_{ID}\P_{ID}.acq'
+            BioPac = bioread.read_file(participant_acq)
+            Start_time_raw = BioPac.event_markers[0].text
+
+            try:
+                # נסה תמיד להמיר ל־datetime דרך pd.to_datetime + to_pydatetime
+                Start_time_dt = pd.to_datetime(Start_time_raw, errors='coerce')
+
+                if pd.isnull(Start_time_dt):
+                    raise ValueError(f"Start_time לא ניתן להמרה: {Start_time_raw}")
+
+                Start_time_dt = Start_time_dt.to_pydatetime()
+
+            except Exception as e:
+                print(f"❌ שגיאה בהמרת Start_time: {Start_time_raw} ({type(Start_time_raw)})")
+                raise e
+
             CS_path = f'{pebl_path}\\battery\\stroop\\data\\{ID}\\CS-{ID}.csv'
             PA_path = f'{pebl_path}\\battery\\PASAT\\data\\{ID}\\PASAT-{ID}.csv'
             TC_path = f'{pebl_path}\\battery\\twocoladd\\data\\{ID}\\twocol-{ID}.csv'
@@ -49,32 +67,109 @@ class HumanDataPebl():
             PA_df = pd.read_csv(PA_path)
             TC_df = pd.read_csv(TC_path)
 
-            # Select relevant columns and add metadata
-            PA_df = PA_df[['rt', 'correct', 'isi']].copy()
+            # Keep only the needed columns and add metadata
+            PA_df = PA_df[['rt', 'correct', 'isi', 'respond_Q_ts']].copy()
             PA_df['Task'] = 'PASAT'
             PA_df['ID'] = ID
             PA_df['Group'] = Group
-            PA_df['Level']=PA_df['isi'].map({3000:'easy',2400:'medium',1800:'hard'})
-            PA_df = PA_df.rename(columns={'rt': 'RT'})
 
-            TC_df = TC_df[['rs', 'corr', 'trial']].copy()
+            # Map ISI to difficulty levels
+            PA_df['Level'] = PA_df['isi'].map({3000: 'easy', 2400: 'medium', 1800: 'hard'})
+
+            # Convert RT from ms to seconds
+            PA_df['RT'] = PA_df['rt'] / 1000
+
+            # Reset index to ensure positional slicing by rows
+            PA_df = PA_df.reset_index(drop=True)
+
+            if ID==19:
+                PA_df['respond_Q_ts'] = pd.to_datetime(
+                    PA_df['respond_Q_ts'],
+                    format='%a %b %d %H:%M:%S',
+                    errors='coerce'
+                )
+            else:
+                PA_df['respond_Q_ts'] = pd.to_datetime(
+                    PA_df['respond_Q_ts'],
+                    format='%a %b %d %H:%M:%S %Y',
+                    errors='coerce'
+                )
+
+            first_level_dt = PA_df['respond_Q_ts'].iloc[0]  # נניח שזה אותו תאריך
+            start_time_dt = Start_time_dt.replace(
+                year=first_level_dt.year,
+                month=first_level_dt.month,
+                day=first_level_dt.day
+            )
+
+            # חישוב זמן יחסי מתחילת ההקלטה
+            PA_df['Time'] = (PA_df['respond_Q_ts'] - start_time_dt).dt.total_seconds()
+
+            # Keep only the necessary columns and initialize metadata
+            TC_df = TC_df[['rs', 'corr', 'trial','respond_Q_ts']].copy()
             TC_df['Task'] = 'TwoColAdd'
             TC_df['ID'] = ID
             TC_df['Group'] = Group
-            TC_df['isi']= TC_df['trial'].index.map(lambda x:12000 if x<10 else 7000)
-            # Rename columns for consistency
-            TC_df = TC_df.rename(columns={'rs': 'RT', 'corr': 'correct'})
-            TC_df['Level']=TC_df['isi'].map({12000:'easy',7000:'hard'})
-            CS_df = CS_df[['rt', 'correct', 'trial']].copy()
+
+            # Assign ISI based on index (first 10 trials are 'easy', rest are 'hard')
+            TC_df['isi'] = TC_df['trial'].index.map(lambda x: 12000 if x < 10 else 7000)
+
+            # Map ISI values to difficulty levels
+            TC_df['Level'] = TC_df['isi'].map({12000: 'easy', 7000: 'hard'})
+
+            # Convert RT from milliseconds to seconds
+            TC_df['RT'] = TC_df['rs'] / 1000
+
+            # Rename 'corr' to 'correct' for consistency
+            TC_df = TC_df.rename(columns={'corr': 'correct'})
+
+            if ID==19:
+                TC_df['respond_Q_ts'] = pd.to_datetime(
+                    TC_df['respond_Q_ts'],
+                    format='%a %b %d %H:%M:%S',
+                    errors='coerce'
+                )
+            else:
+                TC_df['respond_Q_ts'] = pd.to_datetime(
+                    TC_df['respond_Q_ts'],
+                    format='%a %b %d %H:%M:%S %Y',
+                    errors='coerce'
+                )
+
+            first_level_dt = TC_df['respond_Q_ts'].iloc[0]  # נניח שזה אותו תאריך
+            start_time_dt = Start_time_dt.replace(
+                year=first_level_dt.year,
+                month=first_level_dt.month,
+                day=first_level_dt.day
+            )
+
+            TC_df['Time'] = (TC_df['respond_Q_ts'] - start_time_dt).dt.total_seconds()
+
+            CS_df = CS_df[['rt', 'correct', 'trial', 'respond_Q_ts']].copy()
             CS_df['Task'] = 'Stroop'
             CS_df['ID'] = ID
             CS_df['Group'] = Group
-            CS_df['isi']=CS_df['trial'].index.map(lambda x:300 if x<30 else 200)
-            CS_df['Level']=CS_df['isi'].map({300:'easy',200:'hard'})
-            CS_df = CS_df.rename(columns={'rt': 'RT'})
+            CS_df['isi'] = CS_df['trial'].index.map(lambda x: 3000 if x < 30 else 650)
+            CS_df['Level'] = CS_df['isi'].map({3000: 'easy', 650: 'hard'})
+            CS_df['RT'] = CS_df['rt'] / 1000
+
+            CS_df['respond_Q_ts'] = pd.to_datetime(
+                CS_df['respond_Q_ts'],
+                format='%a %b %d %H:%M:%S %Y',
+                errors='coerce'
+            )
+            first_level_dt = CS_df['respond_Q_ts'].iloc[0]  # נניח שזה אותו תאריך
+            start_time_dt = Start_time_dt.replace(
+                year=first_level_dt.year,
+                month=first_level_dt.month,
+                day=first_level_dt.day
+            )
+
+            CS_df['Time'] = (CS_df['respond_Q_ts'] - start_time_dt).dt.total_seconds()
+
             Individual_performance=pd.concat([PA_df, TC_df, CS_df])
             Individual_performance_path = fr'{self.path}\Participants\{Group}_group\P_{ID}\Performance-{ID}.csv'
-            desired_columns = ['ID', 'Group', 'Task', 'isi', 'Level', 'RT', 'correct']
+            desired_columns = ['ID', 'Group', 'Task', 'isi', 'Level', 'RT', 'correct','Time']
             remaining_columns = [col for col in Individual_performance.columns if col not in desired_columns]
             column_order = desired_columns + remaining_columns
             # Select columns that actually exist in the dataframe
@@ -105,14 +200,13 @@ class HumanDataPebl():
             Performance_df = Performance_df[Performance_df['Level'].notna()]
 
             # Reorder columns: ID, Group, test_type, isi, RT, correct, then any remaining columns
-            desired_columns = ['ID', 'Group', 'Task', 'isi','Level','RT', 'correct']
+            desired_columns = ['ID', 'Group', 'Task', 'isi','Level','RT', 'correct','Time']
             remaining_columns = [col for col in Performance_df.columns if col not in desired_columns]
             column_order = desired_columns + remaining_columns
 
             # Select columns that actually exist in the dataframe
             available_columns = [col for col in column_order if col in Performance_df.columns]
             Performance_df = Performance_df[available_columns]
-
             Performance_df.to_csv(Performance_path, index=False)
 
             # 📊 Summary table for RT by Task_Level and Group
@@ -288,11 +382,11 @@ class HumanDataPebl():
         # Convert structured data to DataFrame
         final_df = pd.DataFrame(structured_data, columns=["Sub", "Task", "Start", "End"])
         final_df["Task"]=final_df["Task"].str.strip()
-        # Merge CS_B1 and CS_B2 into CB_easy and CB_hard
+        # Merge CS_B1 and CS_B2 into CS_easy and CS_hard
         final_df.loc[(final_df["Task"] == "CS_B1 3000") | (final_df["Task"] == "CS_B2 3000"), "Task"] = "CS_easy"
         final_df.loc[(final_df["Task"] == "CS_B1 650") | (final_df["Task"] == "CS_B2 650"), "Task"] = "CS_hard"
 
-        # Merge consecutive CB_easy and CB_hard tasks
+        # Merge consecutive CS_easy and CS_hard tasks
         merged_rows = []
         previous_row = None
 
@@ -457,16 +551,16 @@ class HumanDataPebl():
                     combined_ID.loc[24, 'Task'] = 'Break3'
                     combined_ID.loc[33, 'Task'] = 'Break4'
             # Corrected version - assign Score values based on conditions
-            combined_ID.loc[combined_ID['Task'] == 'CB_easy', 'Accuracy_Mean'] = \
+            combined_ID.loc[combined_ID['Task'] == 'CS_easy', 'Accuracy_Mean'] = \
                 performance_Accuracy.loc[(performance_Accuracy['Task'] == 'Stroop') &
                                          (performance_Accuracy['Level'] == 'easy'), 'accuracy_mean'].values
-            combined_ID.loc[combined_ID['Task'] == 'CB_easy', 'RT_Mean'] = \
+            combined_ID.loc[combined_ID['Task'] == 'CS_easy', 'RT_Mean'] = \
                 performance_RT.loc[(performance_RT['Task'] == 'Stroop') &
                                          (performance_RT['Level'] == 'easy'), 'mean'].values
-            combined_ID.loc[combined_ID['Task'] == 'CB_hard', 'Accuracy_Mean'] = \
+            combined_ID.loc[combined_ID['Task'] == 'CS_hard', 'Accuracy_Mean'] = \
                 performance_Accuracy.loc[(performance_Accuracy['Task'] == 'Stroop') &
                                          (performance_Accuracy['Level'] == 'hard'), 'accuracy_mean'].values
-            combined_ID.loc[combined_ID['Task'] == 'CB_hard', 'RT_Mean'] = \
+            combined_ID.loc[combined_ID['Task'] == 'CS_hard', 'RT_Mean'] = \
                 performance_RT.loc[(performance_RT['Task'] == 'Stroop') &
                                          (performance_RT['Level'] == 'hard'), 'mean'].values
             combined_ID.loc[combined_ID['Task'] == 'PA_easy', 'Accuracy_Mean'] = \
@@ -499,6 +593,21 @@ class HumanDataPebl():
             combined_ID.loc[combined_ID['Task'] == 'TC_hard', 'RT_Mean'] = \
                 performance_RT.loc[(performance_RT['Task'] == 'TwoColAdd') &
                                          (performance_RT['Level'] == 'hard'), 'mean'].values
+            combined_ID['Score'] = pd.to_numeric(combined_ID['Score'], errors='coerce')
+            combined_ID['Score_Norm'] = np.nan
+            combined_ID['Score_Delta'] = np.nan
+
+            for vas_task in ['VAS_Stress', 'VAS_Fatigue']:
+                m = combined_ID['Task'] == vas_task
+                s = combined_ID.loc[m, 'Score']
+
+                first = s.dropna().iloc[0] if not s.dropna().empty else np.nan
+                if pd.notna(first) and first != 0:
+                    combined_ID.loc[m, 'Score_Norm'] = (s - first).round(2)
+                else:
+                    combined_ID.loc[m, 'Score_Norm'] = np.nan
+
+                combined_ID.loc[m, 'Score_Delta'] = s.diff().round(2)
             combined_ID.to_csv(participant_Trigger, index=False)
 
         # else:
