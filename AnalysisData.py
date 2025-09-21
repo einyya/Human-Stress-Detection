@@ -1,3 +1,22 @@
+from sklearn.model_selection import train_test_split, GroupKFold
+from sklearn.experimental import enable_halving_search_cv  # noqa: F401
+from sklearn.model_selection import HalvingGridSearchCV
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, ConfusionMatrixDisplay
+try:
+    from sklearn.inspection import permutation_importance
+except Exception:
+    permutation_importance = None  # fallback אם הפונקציה לא זמינה בגרסה שלך
+from sklearn.base import clone
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Models
+from sklearn.tree import DecisionTreeClassifier, plot_tree
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.svm import LinearSVC, SVC
+from sklearn.linear_model import LogisticRegression
+from xgboost import XGBClassifier
 from matplotlib import patheffects
 from sklearn.linear_model import LogisticRegression
 import seaborn as sns
@@ -190,6 +209,23 @@ class AnalysisData():
         return best_thr, best_scores
 
     def ML_models_Prediction(self, n_repeats=9):
+        """
+        Multi-variant regression pipeline for prediction targets.
+        Variants:
+          - RAW: Clean_Data, no scaling
+          - X_N: Clean_Data, with StandardScaler
+          - X_D: Clean_Data_D, no scaling (physiological deltas)
+          - X_B: Clean_Data_B, no scaling (baseline-normalized)
+
+        For each prediction target, variant, and signals=['All']:
+          1) load or search hyperparameters on train only with GroupKFold
+          2) evaluate n_repeats splits by subject IDs
+          3) save visuals (trees, linear equations)
+          4) save Results and Summary
+          5) save feature importance per model and combined
+          6) write Master per target and config across variants
+        """
+        # ===== models and grids =====
         base_models = {
             'LinearRegression': LinearRegression(),
             'Ridge': Ridge(random_state=42),
@@ -199,9 +235,8 @@ class AnalysisData():
             'XGBoost': XGBRegressor(random_state=42)
         }
 
-        # Hyperparameter grids
         param_grids = {
-            'LinearRegression': {},  # <-- Add this line to fix the KeyError
+            'LinearRegression': {},
             'Ridge': {'alpha': [0.1, 1, 10]},
             'Lasso': {'alpha': [0.01, 0.1, 1]},
             'DecisionTree': {
@@ -220,330 +255,602 @@ class AnalysisData():
         }
 
         window_sizes = [5, 10, 30, 60]
-        overlaps = [0.0, 0.5]        # Normalize X using Z-score normalization
+        overlaps = [0.0, 0.5]
 
-        # Load participant IDs
+        # ===== variants like classification =====
+        variants = [
+            {
+                "tag": "RAW",
+                "data_subdir": "Clean_Data",
+                "scale_flag": False,
+                "out_root": os.path.join(self.path, 'Participants', 'Dataset', 'ML', 'Prediction', 'prediction_raw'),
+            },
+            {
+                "tag": "X_N",
+                "data_subdir": "Clean_Data",
+                "scale_flag": True,
+                "out_root": os.path.join(self.path, 'Participants', 'Dataset', 'ML', 'Prediction', 'prediction_X_N'),
+            },
+            {
+                "tag": "X_D",
+                "data_subdir": "Clean_Data_D",
+                "scale_flag": False,
+                "out_root": os.path.join(self.path, 'Participants', 'Dataset', 'ML', 'Prediction', 'prediction_X_D'),
+            },
+            {
+                "tag": "X_B",
+                "data_subdir": "Clean_Data_B",
+                "scale_flag": False,
+                "out_root": os.path.join(self.path, 'Participants', 'Dataset', 'ML', 'Prediction', 'prediction_X_B'),
+            },
+        ]
+
+        # ===== participants and signals =====
         participants_csv = os.path.join(self.path, 'Participants', 'participation management.csv')
         participants = pd.read_csv(participants_csv)
         all_ids = participants['code'].dropna().astype(int).unique()
 
+        # In prediction we run only on All
         signals = ['All']
-        for prediction in tqdm(self.Prediction_Targets, desc="🔍 Prediction Target"):
+
+        # ===== dataset reader =====
+        def read_dataset(data_subdir, ws, ov):
+            fpath = os.path.join(
+                self.path, 'Participants', 'Dataset', 'Dataset_By_Window',
+                data_subdir, f'Dataset_{ws}s_{int(ov * 100)}.csv'
+            )
+            if not os.path.exists(fpath):
+                return None
+            return pd.read_csv(fpath)
+
+        # ===== metrics helper numeric =====
+        def compute_regression_metrics(y_true, y_pred, k):
+            y_true = np.asarray(y_true)
+            y_pred = np.asarray(y_pred)
+            n = len(y_pred)
+            rss = float(np.sum((y_true - y_pred) ** 2))
+            tss = float(np.sum((y_true - np.mean(y_true)) ** 2))
+            mse = rss / n if n > 0 else np.nan
+            r2 = 1 - rss / tss if tss > 0 else np.nan
+            r2_adj = 1 - (1 - r2) * (n - 1) / max(1, (n - k - 1)) if not np.isnan(r2) else np.nan
+            aic = n * np.log(rss / n) + 2 * k if n > 0 and rss > 0 else np.nan
+            bic = n * np.log(rss / n) + k * np.log(n) if n > 0 and rss > 0 else np.nan
+            var_y = float(np.var(y_true, ddof=1)) if n > 1 else np.nan
+            return mse, r2, r2_adj, aic, bic, var_y
+
+        # ===== per target master =====
+        master_rows_per_target = {}
+
+        # ===== main loop over targets =====
+        for prediction in tqdm(getattr(self, "Prediction_Targets", []), desc="Prediction Target"):
             print(f"\n=== Prediction Target: {prediction} ===")
+            master_rows_per_target[prediction] = []
 
+            # configs you requested
             config_options = {
+                fr'{prediction}_Add_Level_Type_Group': ["Level", "Test_Type", "Group"],
                 fr'{prediction}_Add_Level_Type': ["Level", "Test_Type"],
-                fr'{prediction}_Add_Level': ["Level"],
+                fr'{prediction}_Add_Group': ["Group"],
                 fr'{prediction}_Base': []
-
             }
+
             for config_name, add_categoricals in config_options.items():
-                out_dir = fr"C:\Users\e3bom\Desktop\Human Bio Signals Analysis\Participants\Dataset\ML\Prediction\{prediction}\{config_name}"
-                os.makedirs(out_dir, exist_ok=True)
+                print(f"\n--- Config: {config_name} | categoricals: {add_categoricals} ---")
+                variant_best_summaries = []
 
-                all_summary = []
+                for variant in variants:
+                    tag = variant["tag"]
+                    data_subdir = variant["data_subdir"]
+                    scale_flag = variant["scale_flag"]
+                    out_root = os.path.join(variant["out_root"], prediction, config_name)
+                    os.makedirs(out_root, exist_ok=True)
+                    print(f"\n=== Variant: {tag} | Data: {data_subdir} | Scale: {scale_flag} ===")
 
-                for signal in tqdm(signals, desc="📡 Signals", leave=False):
-                    print(f"\n--- Signal: {signal} ---")
-                    results = []
-                    importances = {name: [] for name in base_models}
-                    best_ws = {name: {'window': None, 'overlap': None, 'mse': np.inf} for name in base_models}
-                    best_params = {}
+                    all_summary = []
 
-                    hyper_dir = os.path.join(out_dir, "hyperparameters")
-                    ws_path = os.path.join(hyper_dir, "best_ws.csv")
-                    params_path = os.path.join(hyper_dir, "best_params.csv")
-                    for repeat in tqdm(range(n_repeats), desc="🔁 Repeats", leave=False):
-                        print(f"▶️ Repeat {repeat + 1}/{n_repeats}")
-                        train_ids, test_ids = train_test_split(
-                            all_ids, test_size=0.2, random_state=42 + repeat
-                        )
+                    for signal in signals:
+                        print(f"\nSignal: {signal}")
+                        results = []
+                        importances = {name: [] for name in base_models}
+                        best_ws = {name: {'window': None, 'overlap': None, 'r2': -np.inf} for name in base_models}
+                        best_params = {}
 
-                        if os.path.exists(ws_path) and os.path.exists(params_path):
-                            ws_df = pd.read_csv(ws_path)
-                            params_df = pd.read_csv(params_path)
-                            for _, row in ws_df.iterrows():
-                                best_ws[row['model']] = {'window': int(row['window']), 'overlap': float(row['overlap']),
-                                                         'mse': float(row['mse'])}
-                            for _, row in params_df.iterrows():
-                                model = row['model']
-                                param_dict = {}
-                                for k in row.index:
-                                    if k != 'model' and pd.notnull(row[k]):
-                                        v = row[k]
-                                        # Convert known integer parameters to int
-                                        if k in ['max_depth', 'min_samples_split', 'min_samples_leaf', 'n_estimators']:
-                                            v = int(v)
-                                        param_dict[k] = v
-                                best_params[model] = param_dict
-                            print("✅ Loaded saved hyperparameters.")
-                        else:
-                            for name, base_model in tqdm(base_models.items(), desc="🧠 Models", leave=False):
-                                best_config = {'window': None, 'overlap': None, 'params': {}, 'mse': np.inf}
-                                for ws in window_sizes:
-                                    for ov in overlaps:
-                                        print(fr'{name}_{ws}_{ov}')
-                                        file_path = os.path.join(
-                                            self.path, 'Participants', 'Dataset', 'Dataset_By_Window',
-                                            'Clean_Data', f'Dataset_{ws}s_{int(ov * 100)}.csv'
-                                        )
-                                        if not os.path.exists(file_path):
-                                            continue
+                        hyper_dir = os.path.join(out_root, "hyperparameters", signal)
+                        os.makedirs(hyper_dir, exist_ok=True)
+                        ws_path = os.path.join(hyper_dir, "best_ws.csv")
+                        params_path = os.path.join(hyper_dir, "best_params.csv")
 
-                                        df = pd.read_csv(file_path).dropna(subset=[prediction])
-                                        df[prediction] = pd.to_numeric(df[prediction], errors="coerce")
-                                        df = df.dropna(subset=[prediction])
-                                        if signal != 'All':
-                                            cols = ['ID', 'Group', 'Time'] + [c for c in df.columns if c.startswith(signal)]
-                                            df = df[cols + [prediction]]
+                        for repeat in range(n_repeats):
+                            train_ids, test_ids = train_test_split(all_ids, test_size=0.2, random_state=42 + repeat)
 
-                                        df_train = df[df['ID'].isin(train_ids)].copy()
-                                        if df_train.empty:
-                                            continue
+                            loaded_hp = False
+                            if os.path.exists(ws_path) and os.path.exists(params_path):
+                                try:
+                                    ws_df = pd.read_csv(ws_path)
+                                    params_df = pd.read_csv(params_path)
+                                    for _, row in ws_df.iterrows():
+                                        best_ws[row['model']] = {
+                                            'window': int(row['window']),
+                                            'overlap': float(row['overlap']),
+                                            'r2': float(row['r2'])
+                                        }
+                                    for _, row in params_df.iterrows():
+                                        model_name = row['model']
+                                        p = {k: row[k] for k in row.index if k != 'model' and pd.notnull(row[k])}
+                                        cast_int = {'max_depth', 'min_samples_split', 'min_samples_leaf',
+                                                    'n_estimators'}
+                                        for k in list(p.keys()):
+                                            if k in cast_int:
+                                                try:
+                                                    p[k] = int(p[k])
+                                                except Exception:
+                                                    pass
+                                        best_params[model_name] = p
+                                    loaded_hp = True
+                                    print(f"loaded hyperparameters for {tag} • {signal}.")
+                                except Exception as e:
+                                    print(f"could not load hyperparameters for {tag} • {signal}: {e}")
 
-                                        feature_cols = [c for c in df.columns if c not in self.ex_col]
-                                        scaler = StandardScaler()
-                                        X_train = df_train[feature_cols].copy()
-                                        X_train = pd.DataFrame(scaler.fit_transform(X_train), columns=X_train.columns,
-                                                               index=X_train.index)
-                                        if add_categoricals:
-                                            cat_df = pd.get_dummies(df_train[add_categoricals], drop_first=True)
-                                            X_train = pd.concat([X_train, cat_df], axis=1)
-                                        feature_cols_extended = X_train.columns.tolist()
-                                        gkf = GroupKFold(n_splits=3)
-                                        grid = HalvingGridSearchCV(
-                                            estimator=clone(base_model),
-                                            param_grid=param_grids[name],
-                                            cv=gkf,
-                                            scoring="neg_mean_squared_error",
-                                            n_jobs=-1,
-                                            factor=2,
-                                            resource="n_samples",
-                                            max_resources="auto",
-                                            aggressive_elimination=False,
-                                            refit=False
-                                        )
-                                        grid.fit(X_train, df_train[prediction], groups=df_train['ID'])
-                                        mean_mse = -grid.best_score_
-                                        print(f"Model: {name}, Window: {ws}, Overlap: {ov}, MSE: {mean_mse:.4f}")
+                            if not loaded_hp:
+                                print("grid search for best window, overlap, and hyperparameters (scoring=r2)...")
+                                for name, base_model in base_models.items():
+                                    best_config = {'window': None, 'overlap': None, 'params': {}, 'r2': -np.inf}
+                                    for ws in window_sizes:
+                                        for ov in overlaps:
+                                            df = read_dataset(data_subdir, ws, ov)
+                                            if df is None:
+                                                continue
+                                            df[prediction] = pd.to_numeric(df[prediction], errors="coerce")
+                                            df = df.dropna(subset=[prediction])
 
-                                        if mean_mse < best_config['mse']:
-                                            best_config.update({
-                                                'window': ws,
-                                                'overlap': ov,
-                                                'params': grid.best_params_,
-                                                'mse': mean_mse
-                                            })
+                                            if signal != 'All':
+                                                selected_columns = self.ex_col + [c for c in df.columns if
+                                                                                  c.startswith(signal + '_')]
+                                                selected_columns = [c for c in selected_columns if c in df.columns]
+                                                df = df[selected_columns + [prediction]]
 
-                                best_ws[name] = {
-                                    'window': best_config['window'],
-                                    'overlap': best_config['overlap'],
-                                    'mse': best_config['mse']
+                                            df_train = df[df['ID'].isin(train_ids)].copy()
+                                            if df_train.empty:
+                                                continue
+
+                                            feature_cols = [c for c in df.columns if
+                                                            c not in self.ex_col and c != prediction]
+                                            X_train = df_train[feature_cols].copy()
+                                            X_train = X_train.replace([np.inf, -np.inf], np.nan)
+                                            df_train = df_train.replace([np.inf, -np.inf], np.nan)
+                                            mask_valid = X_train.notna().all(axis=1) & df_train[prediction].notna()
+                                            X_train = X_train.loc[mask_valid]
+                                            y_train = df_train.loc[mask_valid, prediction]
+
+                                            if scale_flag:
+                                                scaler = StandardScaler()
+                                                X_train = pd.DataFrame(
+                                                    scaler.fit_transform(X_train),
+                                                    columns=X_train.columns,
+                                                    index=X_train.index
+                                                )
+
+                                            if add_categoricals:
+                                                cats = [c for c in add_categoricals if c in df_train.columns]
+                                                if cats:
+                                                    cat_df = pd.get_dummies(df_train.loc[X_train.index, cats],
+                                                                            drop_first=True)
+                                                    X_train = pd.concat([X_train, cat_df], axis=1)
+
+                                            gkf = GroupKFold(n_splits=3)
+                                            grid = HalvingGridSearchCV(
+                                                estimator=clone(base_model),
+                                                param_grid=param_grids[name],
+                                                cv=gkf,
+                                                scoring="r2",
+                                                n_jobs=-1,
+                                                factor=2,
+                                                resource="n_samples",
+                                                max_resources="auto",
+                                                aggressive_elimination=False,
+                                                refit=False,
+                                                verbose=0
+                                            )
+                                            try:
+                                                grid.fit(X_train, y_train, groups=df_train.loc[X_train.index, 'ID'])
+                                                mean_r2 = grid.best_score_
+                                                if mean_r2 > best_config['r2']:
+                                                    best_config.update({
+                                                        'window': ws,
+                                                        'overlap': ov,
+                                                        'params': grid.best_params_,
+                                                        'r2': mean_r2
+                                                    })
+                                            except Exception as e:
+                                                print(f"grid error {name} WS={ws} OV={ov}: {e}")
+
+                                    best_ws[name] = {
+                                        'window': best_config['window'],
+                                        'overlap': best_config['overlap'],
+                                        'r2': best_config['r2']
+                                    }
+                                    best_params[name] = best_config['params']
+
+                                pd.DataFrame(
+                                    [{'model': k, 'window': v['window'], 'overlap': v['overlap'], 'r2': v['r2']}
+                                     for k, v in best_ws.items()]
+                                ).to_csv(ws_path, index=False)
+                                pd.DataFrame(
+                                    [dict({'model': k}, **v) for k, v in best_params.items()]
+                                ).to_csv(params_path, index=False)
+                                print(f"saved hyperparameters for {tag} • {signal}.")
+
+                            # ===== evaluation with best_ws and best_params =====
+                            for name in base_models:
+                                ws = best_ws[name]['window']
+                                ov = best_ws[name]['overlap']
+                                if ws is None or ov is None:
+                                    continue
+
+                                df = read_dataset(data_subdir, ws, ov)
+                                if df is None:
+                                    continue
+
+                                df[prediction] = pd.to_numeric(df[prediction], errors="coerce")
+                                df = df.dropna(subset=[prediction])
+
+                                if signal != 'All':
+                                    selected_columns = self.ex_col + [c for c in df.columns if
+                                                                      c.startswith(signal + '_')]
+                                    selected_columns = [c for c in selected_columns if c in df.columns]
+                                    df = df[selected_columns + [prediction]]
+
+                                df_train = df[df['ID'].isin(train_ids)].copy()
+                                df_test = df[df['ID'].isin(test_ids)].copy()
+
+                                feature_cols = [c for c in df.columns if c not in self.ex_col and c != prediction]
+                                X_train = df_train[feature_cols].copy().replace([np.inf, -np.inf], np.nan)
+                                X_test = df_test[feature_cols].copy().replace([np.inf, -np.inf], np.nan)
+
+                                mask_tr = X_train.notna().all(axis=1) & df_train[prediction].notna()
+                                mask_te = X_test.notna().all(axis=1) & df_test[prediction].notna()
+                                X_train = X_train.loc[mask_tr]
+                                y_train = df_train.loc[mask_tr, prediction]
+                                X_test = X_test.loc[mask_te]
+                                y_test = df_test.loc[mask_te, prediction]
+
+                                if scale_flag:
+                                    scaler = StandardScaler()
+                                    X_train = pd.DataFrame(scaler.fit_transform(X_train), columns=X_train.columns,
+                                                           index=X_train.index)
+                                    X_test = pd.DataFrame(scaler.transform(X_test), columns=X_test.columns,
+                                                          index=X_test.index)
+
+                                if add_categoricals:
+                                    cats = [c for c in add_categoricals if c in df.columns]
+                                    if cats:
+                                        cat_train = pd.get_dummies(df_train.loc[X_train.index, cats], drop_first=True)
+                                        cat_test = pd.get_dummies(df_test.loc[X_test.index, cats], drop_first=True)
+                                        cat_test = cat_test.reindex(columns=cat_train.columns, fill_value=0)
+                                        X_train = pd.concat([X_train, cat_train], axis=1)
+                                        X_test = pd.concat([X_test, cat_test], axis=1)
+
+                                model = clone(base_models[name]).set_params(**best_params.get(name, {}))
+                                model.fit(X_train, y_train)
+                                y_pred = model.predict(X_test)
+
+                                k_feats = X_test.shape[1]
+                                mse, r2, r2_adj, aic, bic, var_y = compute_regression_metrics(y_test.values, y_pred,
+                                                                                              k_feats)
+                                print(
+                                    f"{tag} • {signal} • {name} • WS={ws}s OV={int(ov * 100)}% | MSE={mse:.3f} R2={r2:.3f} AdjR2={r2_adj:.3f}")
+
+                                row = {
+                                    'Variant': tag,
+                                    'Signal': signal,
+                                    'Repeat': repeat + 1,
+                                    'Model': name,
+                                    'Window (s)': ws,
+                                    'Overlap (%)': int(ov * 100),
+                                    'MSE': mse,
+                                    'R2': r2,
+                                    'Adj_R2': r2_adj,
+                                    'AIC': aic,
+                                    'BIC': bic,
+                                    'Var_Y': var_y,
                                 }
-                                best_params[name] = best_config['params']
-                            os.makedirs(hyper_dir, exist_ok=True)
-                            pd.DataFrame([{'model': k, **v} for k, v in best_ws.items()]).to_csv(ws_path, index=False)
-                            pd.DataFrame([dict({'model': k}, **v) for k, v in best_params.items()]).to_csv(params_path, index=False)
-                            print("✅ Saved hyperparameters.")
-                        # Evaluation
-                        for name in tqdm(base_models, desc="🔍 Evaluation", leave=False):
-                            ws = best_ws[name]['window']
-                            ov = best_ws[name]['overlap']
-                            if ws is None:
-                                continue
+                                row.update({f'param_{k}': v for k, v in best_params.get(name, {}).items()})
+                                results.append(row)
 
-                            file_path = os.path.join(
-                                self.path, 'Participants', 'Dataset', 'Dataset_By_Window',
-                                'Clean_Data', f'Dataset_{ws}s_{int(ov * 100)}.csv'
-                            )
-                            df = pd.read_csv(file_path).dropna(subset=[prediction])
-                            df[prediction] = pd.to_numeric(df[prediction], errors="coerce")
-                            df = df.dropna(subset=[prediction])
+                                # visuals
+                                model_out_dir = os.path.join(out_root, "Model_Visuals", signal, name,
+                                                             f"Repeat_{repeat + 1}")
+                                os.makedirs(model_out_dir, exist_ok=True)
 
-                            if signal != 'All':
-                                cols = ['ID', 'Group', 'Time'] + [c for c in df.columns if c.startswith(signal)]
-                                df = df[cols + [prediction]]
+                                if hasattr(model, "coef_"):
+                                    try:
+                                        feat_names = X_train.columns.tolist()
+                                        self.save_linear_equation(model, feat_names, model_out_dir, model_name=name)
+                                    except Exception as e:
+                                        with open(os.path.join(model_out_dir, f"{name}_linear_eq_error.txt"), "w",
+                                                  encoding="utf-8") as f:
+                                            f.write(str(e))
 
-                            df_train = df[df['ID'].isin(train_ids)]
-                            df_test = df[df['ID'].isin(test_ids)]
-                            feature_cols = [c for c in df.columns if c not in self.ex_col]
+                                if isinstance(model, DecisionTreeRegressor):
+                                    try:
+                                        self.save_decision_tree_plots(model, X_train.columns.tolist(), model_out_dir,
+                                                                      title=f"{name}")
+                                    except Exception as e:
+                                        with open(os.path.join(model_out_dir, f"{name}_tree_error.txt"), "w",
+                                                  encoding="utf-8") as f:
+                                            f.write(str(e))
 
-                            model = clone(base_models[name]).set_params(**best_params[name])
-                            scaler = StandardScaler()
-                            X_train = df_train[feature_cols].copy()
-                            X_train = pd.DataFrame(scaler.fit_transform(X_train), columns=X_train.columns,
-                                                   index=X_train.index)
-                            if add_categoricals:
-                                cat_df = pd.get_dummies(df_train[add_categoricals], drop_first=True)
-                                X_train = pd.concat([X_train, cat_df], axis=1)
+                                if isinstance(model, RandomForestRegressor):
+                                    try:
+                                        rep_tree = self.pick_representative_rf_tree(model)
+                                        if rep_tree is not None:
+                                            self.save_decision_tree_plots(rep_tree, X_train.columns.tolist(),
+                                                                          model_out_dir, title=f"{name}_repTree")
+                                    except Exception as e:
+                                        with open(os.path.join(model_out_dir, f"{name}_rf_tree_error.txt"), "w",
+                                                  encoding="utf-8") as f:
+                                            f.write(str(e))
 
-                            feature_cols_extended = X_train.columns.tolist()
-                            model.fit(X_train, df_train[prediction])
-                            feat_names_for_output = feature_cols_extended if 'feature_cols_extended' in locals() else feature_cols
+                                if isinstance(model, XGBRegressor):
+                                    try:
+                                        self.safe_plot_xgb_tree(model, model_out_dir, model_name=name, tree_idx=0)
+                                    except Exception as e:
+                                        with open(os.path.join(model_out_dir, f"{name}_xgb_plot_error.txt"), "w",
+                                                  encoding="utf-8") as f:
+                                            f.write(str(e))
 
-                            # Create output directory
-                            model_out_dir = os.path.join(out_dir, "Model_Visuals", signal, name, f"Repeat_{repeat + 1}")
-                            os.makedirs(model_out_dir, exist_ok=True)
-
-                            # --- Linear models ---
-                            if hasattr(model, "coef_"):
-                                self.save_linear_equation(model, feat_names_for_output, model_out_dir, model_name=name)
-                            # --- DecisionTree ---
-                            if isinstance(model, DecisionTreeRegressor):
-                                try:
-                                    self.save_decision_tree_plots(model, feat_names_for_output, model_out_dir, title=f"{name}")
-                                except Exception as e:
-                                    with open(os.path.join(model_out_dir, f"{name}_tree_error.txt"), "w",
-                                              encoding="utf-8") as f:
-                                        f.write(str(e))
-
-                            # --- RandomForest ---
-                            if isinstance(model, RandomForestRegressor):
-                                try:
-                                    rep_tree = self.pick_representative_rf_tree(model)
-                                    if rep_tree is not None:
-                                        self.save_decision_tree_plots(rep_tree, feat_names_for_output, model_out_dir,
-                                                                 title=f"{name}_repTree")
-                                except Exception as e:
-                                    with open(os.path.join(model_out_dir, f"{name}_rf_tree_error.txt"), "w",
-                                              encoding="utf-8") as f:
-                                        f.write(str(e))
-
-                            # --- XGBoost ---
-                            if isinstance(model, XGBRegressor):
-                                try:
-                                    self.safe_plot_xgb_tree(model, model_out_dir, model_name=name, tree_idx=0)
-                                except Exception as e:
-                                    with open(os.path.join(model_out_dir, f"{name}_xgb_plot_error.txt"), "w",
-                                              encoding="utf-8") as f:
-                                        f.write(str(e))
-                            X_test = df_test[feature_cols].copy()
-                            X_test = pd.DataFrame(scaler.transform(X_test), columns=X_test.columns, index=X_test.index)
-                            if add_categoricals:
-                                cat_df_test = pd.get_dummies(df_test[add_categoricals], drop_first=True)
-                                cat_df_test = cat_df_test.reindex(columns=cat_df.columns, fill_value=0)
-                                X_test = pd.concat([X_test, cat_df_test], axis=1)
-                            y_pred = model.predict(X_test)
-                            mse = mean_squared_error(df_test[prediction], y_pred)
-                            r2 = r2_score(df_test[prediction], y_pred)
-                            n = len(y_pred)
-                            k = df_test[feature_cols].shape[1]
-                            rss = np.sum((df_test[prediction] - y_pred) ** 2)
-                            # Adjusted R2
-                            r2_adj = 1 - (1 - r2) * (n - 1) / (n - k - 1)
-                            # AIC
-                            aic = n * np.log(rss / n) + 2 * k
-                            # BIC
-                            bic = n * np.log(rss / n) + k * np.log(n)
-                            var_y = np.var(df_test[prediction], ddof=1)
-                            print(
-                                f"✅ {name}: MSE={mse:.3f}, R2={r2:.3f}, Adj.R2={r2_adj:.3f}, AIC={aic:.1f}, BIC={bic:.1f}")
-
-                            results.append({
-                                'Signal': signal,
-                                'Repeat': repeat + 1,
-                                'Model': name,
-                                'Window (s)': ws,
-                                'Overlap (%)': int(ov * 100),
-                                'MSE': mse,
-                                'R2': r2,
-                                'Adj_R2': r2_adj,
-                                'AIC': aic,
-                                'BIC': bic,
-                                'Var_Y': var_y,
-                                **{f'param_{k}': v for k, v in best_params[name].items()}
-                            })
-                            print({
-                                'Signal': signal,
-                                'Repeat': repeat + 1,
-                                'Model': name,
-                                'Window (s)': ws,
-                                'Overlap (%)': int(ov * 100),
-                                'MSE': mse,
-                                'R2': r2,
-                                'Adj_R2': r2_adj,
-                                'AIC': aic,
-                                'BIC': bic,
-                                **{f'param_{k}': v for k, v in best_params[name].items()}
-                            })
-
-                            # Save feature importance or coefficients
-                            if hasattr(model, 'feature_importances_'):
-                                # Tree-based models
-                                imp_values = model.feature_importances_
-                                imp_name = "Feature_Importance"
-                            elif hasattr(model,'coef_'):
-                                # Linear models
-                                imp_values = np.abs(model.coef_)
-                                imp_name = "Coefficients"
-                            else:
+                                # feature importance
                                 imp_values = None
-
-                            if imp_values is not None:
-                                try:
-                                    if 'feature_cols_extended' in locals():
-                                        imp = pd.Series(imp_values, index=feature_cols_extended).sort_values(
-                                            ascending=False)
+                                imp_name = None
+                                if hasattr(model, 'feature_importances_'):
+                                    imp_values = model.feature_importances_
+                                    imp_name = "Feature_Importance"
+                                elif hasattr(model, 'coef_'):
+                                    coefs = model.coef_
+                                    if isinstance(coefs, np.ndarray):
+                                        imp_values = np.abs(coefs).ravel()
                                     else:
-                                        imp = pd.Series(imp_values, index=feature_cols).sort_values(ascending=False)
-                                except Exception as e:
-                                    print(f"⚠️ Feature importance length mismatch: {e}")
-                                    imp = None
-                                imp_dir = os.path.join(out_dir, "Feature Importance", signal, name, f"Repeat_{repeat + 1}")
-                                os.makedirs(imp_dir, exist_ok=True)
+                                        imp_values = np.abs(np.array(coefs)).ravel()
+                                    imp_name = "Coefficients"
 
-                                imp.to_csv(os.path.join(imp_dir, f"{imp_name}.csv"))
-                                plt.figure(figsize=(10, 5))
-                                imp.plot.bar()
-                                plt.title(f"{name} {imp_name} - {signal} - Repeat {repeat + 1}")
+                                if imp_values is not None:
+                                    try:
+                                        imp = pd.Series(imp_values, index=X_train.columns).sort_values(ascending=False)
+                                        imp_dir = os.path.join(out_root, "Feature Importance", signal, name,
+                                                               f"Repeat_{repeat + 1}")
+                                        os.makedirs(imp_dir, exist_ok=True)
+                                        imp.to_csv(os.path.join(imp_dir, f"{imp_name}.csv"))
+                                        plt.figure(figsize=(12, 5))
+                                        imp.head(40).plot.bar()
+                                        plt.title(f"{name} {imp_name} - {signal} - {tag} - Repeat {repeat + 1}")
+                                        plt.tight_layout()
+                                        plt.savefig(os.path.join(imp_dir, f"{imp_name}.png"))
+                                        plt.close()
+                                        importances[name].append(imp)
+                                    except Exception as e:
+                                        print(f"feature importance error for {name}: {e}")
+
+                        # save results per signal
+                        res_df = pd.DataFrame(results).round(3)
+                        out_res_dir = os.path.join(out_root, "Results")
+                        os.makedirs(out_res_dir, exist_ok=True)
+                        res_path = os.path.join(out_res_dir, f"Results_{signal}.csv")
+                        res_df.to_csv(res_path, index=False)
+
+                        # save summary for signal
+                        summary = (
+                            res_df
+                            .groupby(['Model', 'Window (s)', 'Overlap (%)'])[
+                                ['MSE', 'R2', 'Adj_R2', 'AIC', 'BIC', 'Var_Y']]
+                            .agg(['mean', 'std'])
+                            .reset_index()
+                        )
+                        summary.insert(0, 'Variant', tag)
+                        summary.insert(1, 'Signal', signal)
+
+                        out_sum_dir = os.path.join(out_root, "Summary")
+                        os.makedirs(out_sum_dir, exist_ok=True)
+                        sum_path = os.path.join(out_sum_dir, f"Summary_{signal}.csv")
+                        summary.to_csv(sum_path, index=False)
+                        all_summary.append(summary)
+
+                        # combined importance across models
+                        all_imps_long = []
+                        combined_imp_df = pd.DataFrame()
+                        for name, imps in importances.items():
+                            if imps:
+                                imp_df = pd.concat(imps, axis=1).fillna(0)
+                                imp_df.columns = [f"Repeat_{i + 1}" for i in range(len(imps))]
+                                imp_df["Mean"] = imp_df.mean(axis=1)
+                                imp_df["Std"] = imp_df.std(axis=1)
+
+                                model_data_dir = os.path.join(out_root, "Feature Importance", signal, name, "Summary")
+                                os.makedirs(model_data_dir, exist_ok=True)
+                                imp_df.sort_values("Mean", ascending=False).to_csv(
+                                    os.path.join(model_data_dir, "Feature_Importance_Summary.csv")
+                                )
+
+                                plt.figure(figsize=(12, 5))
+                                imp_df["Mean"].sort_values(ascending=False).plot.bar(yerr=imp_df["Std"])
+                                plt.title(f"{name} Feature Importance Summary - {signal} [{tag}]")
                                 plt.tight_layout()
-                                plt.savefig(os.path.join(imp_dir, f"{imp_name}.png"))
+                                plt.savefig(os.path.join(model_data_dir, "Feature_Importance_Summary.png"))
                                 plt.close()
 
-                                importances[name].append(imp)
-                        # Save results per signal
-                    results_df = pd.DataFrame(results).round(3)
-                    results_df.to_csv(os.path.join(out_dir, f'Results_{signal}.csv'), index=False)
+                                model_imp_df = pd.concat(imps, axis=1).fillna(0)
+                                model_imp_df.columns = [f"{name}_Repeat_{i + 1}" for i in range(len(imps))]
+                                model_imp_df[f"{name}_Mean"] = model_imp_df.mean(axis=1)
+                                combined_imp_df = pd.concat([combined_imp_df, model_imp_df[[f"{name}_Mean"]]], axis=1)
 
-                    # Save summary including all metrics and window/overlap
-                    summary = (
-                        results_df
-                        .groupby(['Model', 'Window (s)', 'Overlap (%)'])[
-                            ['MSE', 'R2', 'Adj_R2', 'AIC', 'BIC', 'Var_Y']
-                        ]
-                        .agg(['mean', 'std'])
-                        .reset_index()
-                    )
-                    summary.insert(0, 'Signal', signal)
-                    summary.to_csv(os.path.join(out_dir, f'Summary_{signal}.csv'), index=False)
-                    all_summary.append(summary)
+                                for i, imp in enumerate(imps):
+                                    tmp = imp.reset_index()
+                                    tmp.columns = ["Feature", "Importance"]
+                                    tmp["Model"] = name
+                                    tmp["Repeat"] = i + 1
+                                    all_imps_long.append(tmp)
 
-                    # Combined feature importance
-                    for name, imps in importances.items():
-                        if imps:
-                            imp_df = pd.concat(imps, axis=1).fillna(0)
-                            imp_df.columns = [f"Repeat_{i + 1}" for i in range(len(imps))]
-                            imp_df["Mean"] = imp_df.mean(axis=1)
-                            imp_df["Std"] = imp_df.std(axis=1)
-
-                            summary_dir = os.path.join(out_dir, "Feature Importance", signal, name, "Summary")
-                            os.makedirs(summary_dir, exist_ok=True)
-
-                            imp_df.sort_values("Mean", ascending=False).to_csv(
-                                os.path.join(summary_dir, "Feature_Importance_Summary.csv")
-                            )
+                        if not combined_imp_df.empty:
+                            combined_imp_df["Combined_Mean"] = combined_imp_df.mean(axis=1)
+                            combined_imp_df = combined_imp_df.sort_values("Combined_Mean", ascending=False)
+                            comb_dir_data = os.path.join(out_root, "Feature Importance", signal, "All Models",
+                                                         "Summary")
+                            os.makedirs(comb_dir_data, exist_ok=True)
+                            combined_imp_df.to_csv(os.path.join(comb_dir_data, "Combined_Feature_Importance.csv"))
 
                             plt.figure(figsize=(12, 5))
-                            imp_df["Mean"].sort_values(ascending=False).plot.bar(yerr=imp_df["Std"])
-                            plt.title(f"{name} Feature Importance Summary - {signal}")
+                            combined_imp_df["Combined_Mean"].plot(kind="bar")
+                            plt.title(f"{signal} [{tag}] Combined Feature Importances")
+                            plt.ylabel("Mean Importance")
+                            plt.xlabel("Feature")
                             plt.tight_layout()
-                            plt.savefig(os.path.join(summary_dir, "Feature_Importance_Summary.png"))
+                            plt.savefig(os.path.join(comb_dir_data, "Combined_Feature_Importance_Plot.png"))
                             plt.close()
 
-                # Save combined summary across signals
-                combined_df = pd.concat(all_summary, ignore_index=True)
-                combined_df.to_csv(os.path.join(out_dir, 'Summary_AllSignals.csv'), index=False)
+                        if all_imps_long:
+                            all_df = pd.concat(all_imps_long, axis=0)
+                            mean_df = all_df.groupby("Feature")["Importance"].mean().sort_values(ascending=False)
+                            mean_df.to_csv(os.path.join(comb_dir_data, "Combined_Feature_Importance_Mean.csv"))
+
+                            plt.figure(figsize=(14, 6))
+                            sns.boxplot(data=all_df, x="Feature", y="Importance", order=mean_df.index)
+                            plt.xticks(rotation=90)
+                            plt.title(f"{signal} [{tag}] Importance Distribution")
+                            plt.tight_layout()
+                            plt.savefig(os.path.join(comb_dir_data, "Combined_Feature_Importance_BoxPlot.png"))
+                            plt.close()
+
+                    # combined summary across signals (here only All)
+                    if all_summary:
+                        combined_summary_df = pd.concat(all_summary, ignore_index=True)
+                        combined_summary_df.columns = [
+                            f"{c[0]}_{c[1]}" if isinstance(c, tuple) else c for c in combined_summary_df.columns
+                        ]
+
+                        front = ["Variant", "Signal", "Model", "Window (s)", "Overlap (%)"]
+                        metrics_order = [
+                            "MSE_mean", "MSE_std", "R2_mean", "R2_std",
+                            "Adj_R2_mean", "Adj_R2_std", "AIC_mean", "AIC_std",
+                            "BIC_mean", "BIC_std", "Var_Y_mean", "Var_Y_std"
+                        ]
+                        existing_front = [c for c in front if c in combined_summary_df.columns]
+                        existing_metrics = [m for m in metrics_order if m in combined_summary_df.columns]
+                        cols_order = existing_front + existing_metrics + [
+                            c for c in combined_summary_df.columns if c not in existing_front + existing_metrics
+                        ]
+                        combined_summary_df = combined_summary_df[cols_order]
+
+                        if "MSE_mean" in combined_summary_df.columns:
+                            # primary sort by lower MSE, fallback by higher R2
+                            combined_summary_df = combined_summary_df.sort_values(["MSE_mean", "R2_mean"],
+                                                                                  ascending=[True, False])
+                        elif "R2_mean" in combined_summary_df.columns:
+                            combined_summary_df = combined_summary_df.sort_values("R2_mean", ascending=False)
+
+                        out_sum_dir = os.path.join(out_root, "Summary")
+                        os.makedirs(out_sum_dir, exist_ok=True)
+                        combined_csv = os.path.join(out_sum_dir, "Summary_AllSignals_combined.csv")
+                        combined_summary_df.to_csv(combined_csv, index=False)
+                        print(f"saved combined summary across signals [{tag}] to {combined_csv}")
+
+                        if not combined_summary_df.empty:
+                            top_row = combined_summary_df.iloc[[0]].copy()
+                            top_row.insert(0, "Config", config_name)
+                            top_row.insert(0, "Prediction", prediction)
+                            variant_best_summaries.append(top_row)
+
+                # master across variants for this prediction+config
+                if variant_best_summaries:
+                    master_df = pd.concat(variant_best_summaries, ignore_index=True)
+                    if "MSE_mean" in master_df.columns:
+                        master_df = master_df.sort_values(["MSE_mean", "R2_mean"], ascending=[True, False])
+                    elif "R2_mean" in master_df.columns:
+                        master_df = master_df.sort_values("R2_mean", ascending=False)
+
+                    master_out_root = os.path.join(self.path, 'Participants', 'Dataset', 'ML', 'Prediction', 'Master')
+                    os.makedirs(master_out_root, exist_ok=True)
+                    master_csv = os.path.join(
+                        master_out_root,
+                        f"Master_BestRows_byVariant_{prediction}_{config_name}.csv"
+                    )
+                    master_df.to_csv(master_csv, index=False)
+                    print(f"saved variant master summary for {prediction} • {config_name} to {master_csv}")
+                    master_rows_per_target[prediction].append(master_df.iloc[[0]])
+
+            # top across configs for this prediction
+            if master_rows_per_target[prediction]:
+                top_across_configs = pd.concat(master_rows_per_target[prediction], ignore_index=True)
+                if "MSE_mean" in top_across_configs.columns:
+                    top_across_configs = top_across_configs.sort_values(["MSE_mean", "R2_mean"],
+                                                                        ascending=[True, False])
+                elif "R2_mean" in top_across_configs.columns:
+                    top_across_configs = top_across_configs.sort_values("R2_mean", ascending=False)
+
+                master_out_root = os.path.join(self.path, 'Participants', 'Dataset', 'ML', 'Prediction', 'Master')
+                os.makedirs(master_out_root, exist_ok=True)
+                top_csv = os.path.join(
+                    master_out_root,
+                    f"Master_TopAcrossConfigs_{prediction}.csv"
+                )
+                top_across_configs.to_csv(top_csv, index=False)
+                print(f"saved top across configs for {prediction} to {top_csv}")
+
     def ML_models_Classification(self, n_repeats=9, no_breath_data=False, clases_3=False):
+        """
+        Multi-variant classification pipeline:
+        Variants:
+          - RAW: Clean_Data, no scaling
+          - X_N: Clean_Data, with StandardScaler
+          - X_D: Clean_Data_D, no scaling (physiological deltas)
+          - X_B: Clean_Data_B, no scaling (baseline-normalized)
+
+        For each variant and each signal subset, performs:
+          1) (טעינה או) חיפוש היפר-פרמטרים על טריין
+          2) הערכת ביצועים n_repeats פעמים עם חלוקה לפי ID
+          3) שמירת ויזואליזציות (DecisionTree, LogisticRegression)
+          4) שמירת CV_Results ו-CV_Summary
+          5) סיכומי חשיבות תכונות בעזרת eli5 PermutationImportance למודלים שאין להם importances/coefs
+          6) בניית Confusion Matrix למודל הטוב ביותר בכל וריאנט
+          7) קובץ Master מסכם את הטובים ביותר בין הווריאנטים
+        """
+
+        # --------- זיהוי תת-תיקיית פלט לפי פרמטרים ---------
+        if clases_3:
+            group_tag = os.path.join('3 class', 'No breath group' if no_breath_data else 'All Data')
+        else:
+            group_tag = os.path.join('2 class', 'No breath group' if no_breath_data else 'All Data')
+
+        # --------- הגדרת וריאנטים ---------
+        variants = [
+            {
+                "tag": "RAW",
+                "data_subdir": "Clean_Data",
+                "scale_flag": False,
+                "out_root": os.path.join(self.path, 'Participants', 'Dataset', 'ML', 'Classification',
+                                         'classification_raw', group_tag),
+            },
+            {
+                "tag": "X_N",
+                "data_subdir": "Clean_Data",
+                "scale_flag": True,  # StandardScaler
+                "out_root": os.path.join(self.path, 'Participants', 'Dataset', 'ML', 'Classification',
+                                         'classification_X_N', group_tag),
+            },
+            {
+                "tag": "X_D",
+                "data_subdir": "Clean_Data_D",
+                "scale_flag": False,
+                "out_root": os.path.join(self.path, 'Participants', 'Dataset', 'ML', 'Classification',
+                                         'classification_X_D', group_tag),
+            },
+            {
+                "tag": "X_B",
+                "data_subdir": "Clean_Data_B",
+                "scale_flag": False,
+                "out_root": os.path.join(self.path, 'Participants', 'Dataset', 'ML', 'Classification',
+                                         'classification_X_B', group_tag),
+            },
+        ]
+
         window_sizes = [5, 10, 30, 60]
         overlaps = [0.0, 0.5]
 
@@ -568,7 +875,7 @@ class AnalysisData():
             },
             'XGBoost': {
                 'n_estimators': [100, 200],
-                'max_depth': [None,3, 6, 10, 20],
+                'max_depth': [3, 6, 10],
                 'learning_rate': [0.01, 0.1]
             },
             'SVM linear': {
@@ -580,177 +887,159 @@ class AnalysisData():
             },
             'LogReg': {
                 'C': [0.1, 1, 10],
-                'penalty': ['l2'],  # נשארים עם L2 כדי להימנע מתלות ב-saga ללוקאל
-                'solver': ['lbfgs', 'liblinear']  # lbfgs תומך בריבוי מחלקות, liblinear טוב לבינארי/OvR
+                'penalty': ['l2'],
+                'solver': ['lbfgs', 'liblinear']
             }
         }
-        if clases_3:
-            if no_breath_data:
-                out_dir = os.path.join(self.path, 'Participants', 'Dataset', 'ML', 'Classification',
-                                       '3 class', 'No breath group')
-            else:
-                out_dir = os.path.join(self.path, 'Participants', 'Dataset', 'ML', 'Classification',
-                                       '3 class', 'All Data')
-        else:
-            if no_breath_data:
-                out_dir = os.path.join(self.path, 'Participants', 'Dataset', 'ML', 'Classification',
-                                       '2 class', 'No breath group')
-            else:
-                out_dir = os.path.join(self.path, 'Participants', 'Dataset', 'ML', 'Classification',
-                                       '2 class', 'All Data')
+
+        # --------- אותות ---------
         participants_csv = os.path.join(self.path, 'Participants', 'participation management.csv')
         participants = pd.read_csv(participants_csv)
-        all_ids = participants['code'].dropna().astype(int).unique()
         if no_breath_data:
-            signals = ['All']
-            # Filter participants to exclude the 'breath' group
-            filtered_participants = participants[participants['Group'] != 'breath']
-            # Extract unique IDs (assuming 'code' column contains them)
-            all_ids = filtered_participants['code'].dropna().astype(int).unique()
-        else:
-            # signals = ['All']
-            signals = ['HRV', 'RSP_C', 'RSP_D', 'EDA', 'All']
-        all_summary = []
-        for signal in signals:
-            print(f"\n📊 Evaluating signal: {signal} no_breath_data {no_breath_data} and clases_3 {clases_3}")
-            results = []
-            importances = {name: [] for name in base_models}
-            best_ws = {name: {'window': None, 'overlap': None, 'f1': -np.inf} for name in base_models}
-            best_params = {}
-            for repeat in tqdm(range(n_repeats), desc="🔁 Repeats", leave=False):
-                print(f"▶️ Repeat {repeat + 1}/{n_repeats}")
-                # -----------Iteration 1-Split Train Test------------------------------
-                train_ids, test_ids = train_test_split(
-                    all_ids, test_size=0.2, random_state=42 + repeat
-                )
-                run_full = (repeat == 0)
-                iter_to_run = [1, 2, 3, 4] if run_full else [1, 4]
-                # -----------Iteration 2-Choose Window Size------------------------------
-                # -----------Iteration 2-Grid Search for Window, Overlap, and Hyperparameters------------------------------
-                if 2 in iter_to_run:
-                    dir_path = fr"{out_dir}\hyperparameters\{signal}"
+            participants = participants[participants['Group'] != 'breath']
+        all_ids = participants['code'].dropna().astype(int).unique()
+        signals = ['HRV', 'RSP_C', 'RSP_D', 'EDA', 'All'] if not no_breath_data else ['All']
 
-                    # 🔹 שמות הקבצים
-                    files = ["best_config.csv", "best_params.csv", "best_ws.csv"]
+        # --------- עזר: קריאת דאטה לפי חלון וחפיפה ---------
+        def read_dataset(data_subdir, ws, ov):
+            fpath = os.path.join(
+                self.path, 'Participants', 'Dataset', 'Dataset_By_Window',
+                data_subdir, f'Dataset_{ws}s_{int(ov * 100)}.csv'
+            )
+            if not os.path.exists(fpath):
+                return None
+            return pd.read_csv(fpath)
 
-                    # 🔹 מסלולים מלאים
-                    file_paths = [os.path.join(dir_path, f) for f in files]
+        # --------- אוסף סיכומים לכל הווריאנטים ---------
+        variant_summaries = []
 
-                    # 🔹 בדיקה אם הקבצים קיימים
-                    if all(os.path.exists(p) for p in file_paths):
-                        # קריאה
-                        df_config = pd.read_csv(file_paths[0])
-                        df_params = pd.read_csv(file_paths[1])
-                        df_ws = pd.read_csv(file_paths[2])
+        # ===================== לולאה על וריאנטים =====================
+        for variant in variants:
+            tag = variant["tag"]
+            data_subdir = variant["data_subdir"]
+            scale_flag = variant["scale_flag"]
+            out_dir = variant["out_root"]
 
-                        print("✅ Files loaded successfully.")
+            os.makedirs(out_dir, exist_ok=True)
+            print(f"\n=== Variant: {tag} | Data: {data_subdir} | Scale: {scale_flag} ===")
 
-                        # --- בניית best_ws ---
-                        df_ws_transposed = df_ws.set_index("Unnamed: 0").transpose()
+            all_summary = []
 
-                        best_ws = {}
-                        for model, row in df_ws_transposed.iterrows():
-                            best_ws[model.strip()] = {
-                                "window": int(row["window"]),
-                                "overlap": float(row["overlap"]),
-                                "f1": float(row["f1"])
-                            }
+            # ===================== לולאה על אותות =====================
+            for signal in signals:
+                print(f"\nEvaluating signal: {signal} | Variant: {tag}")
+                results = []
+                importances = {name: [] for name in base_models}
+                best_ws = {name: {'window': None, 'overlap': None, 'f1': -np.inf} for name in base_models}
+                best_params = {}
 
-                        # --- פונקציה לניקוי פרמטרים ---
-                        def clean_params(params_dict):
-                            clean = {}
-                            for k, v in params_dict.items():
-                                if isinstance(v, str):
-                                    v_str = v.strip()
-                                    if v_str.lower() == "none":
-                                        clean[k] = None
-                                    else:
+                # היפר-פרמטרים שמורים (אם קיימים)
+                hyper_dir = os.path.join(out_dir, 'hyperparameters', signal)
+                os.makedirs(hyper_dir, exist_ok=True)
+                ws_file = os.path.join(hyper_dir, 'best_ws.csv')
+                params_file = os.path.join(hyper_dir, 'best_params.csv')
+
+                # ===================== חזרות =====================
+                for repeat in tqdm(range(n_repeats), desc=f"{tag} • {signal} repeats", leave=False):
+                    # חלוקה לקבוצות ע"פ ID
+                    train_ids, test_ids = train_test_split(all_ids, test_size=0.2, random_state=42 + repeat)
+
+                    # --- ניסיון טעינת היפר-פרמטרים שמורים ---
+                    loaded_hp = False
+                    if os.path.exists(ws_file) and os.path.exists(params_file):
+                        try:
+                            ws_df = pd.read_csv(ws_file)
+                            params_df = pd.read_csv(params_file)
+
+                            for _, row in ws_df.iterrows():
+                                best_ws[row['model']] = {
+                                    'window': int(row['window']),
+                                    'overlap': float(row['overlap']),
+                                    'f1': float(row['f1'])
+                                }
+
+                            for _, row in params_df.iterrows():
+                                model_name = row['model']
+                                p = {k: row[k] for k in row.index if k != 'model' and pd.notnull(row[k])}
+                                # יציקה לערכים שלמים היכן שמתאים
+                                cast_int = {'max_depth', 'min_samples_split', 'n_estimators'}
+                                for k in list(p.keys()):
+                                    if k in cast_int:
                                         try:
-                                            num = float(v_str)
-                                            if num.is_integer():
-                                                clean[k] = int(num)
-                                            else:
-                                                clean[k] = num
-                                        except ValueError:
-                                            clean[k] = v_str
-                                elif isinstance(v, float) and v.is_integer():
-                                    clean[k] = int(v)
-                                else:
-                                    clean[k] = v
-                            return clean
+                                            p[k] = int(p[k])
+                                        except Exception:
+                                            pass
+                                best_params[model_name] = p
 
-                        # --- בניית best_params ---
-                        best_params = {}
+                            loaded_hp = True
+                            print(f"Loaded saved hyperparameters for {tag} • {signal}.")
+                        except Exception as e:
+                            print(f"Could not load saved hyperparameters for {tag} • {signal}: {e}")
 
-                        # Transpose so models are rows
-                        df_params_T = df_params.set_index("Unnamed: 0").transpose()
-
-                        for model, row in df_params_T.iterrows():
-                            params_raw = row.dropna().to_dict()
-                            params_clean = clean_params(params_raw)
-                            best_params[model.strip()] = params_clean
-
-                        # ✅ הצגת מפתחות לבדיקה
-                        print("Best WS Models:", list(best_ws.keys()))
-                        print("Best Params Models:", list(best_params.keys()))
-                    else:
-                        print("  Grid search for best window, overlap, and hyperparameters for each model...")
+                    # --- חיפוש היפר-פרמטרים אם לא נטען ---
+                    if not loaded_hp:
+                        print("Grid search for best window, overlap, and hyperparameters...")
                         for name, base_model in base_models.items():
-                            print(f"    Processing {name}...")
+                            print(f"  Model: {name}")
                             best_config = {'window': None, 'overlap': None, 'params': {}, 'f1': -np.inf}
-
                             for ws in window_sizes:
                                 for ov in overlaps:
-                                    file_path = fr'{self.path}\Participants\Dataset\Dataset_By_Window\Clean_Data\Dataset_{ws}s_{int(ov * 100)}.csv'
-                                    if not os.path.exists(file_path):
-                                        print(f"      Missing file: WS={ws}s, OV={int(ov * 100)}%")
+                                    df = read_dataset(data_subdir, ws, ov)
+                                    if df is None:
                                         continue
-                                    try:
-                                        df = pd.read_csv(file_path)
-                                        df=df.dropna(subset=['Class'])
-                                        if signal != 'All':
-                                            selected_columns = self.ex_col + [col for col in df.columns if
-                                                                               col.startswith(signal + '_')]
-                                            df = df[selected_columns]
-                                        df_train = df[df['ID'].isin(train_ids)].copy()
-                                        feature_cols = [c for c in df.columns if
-                                                        c not in self.ex_col]
-                                        if clases_3:
-                                            df_train['Class'] = df_train['Class'].map({'test': 1, 'music': 0, 'breath': 0, 'natural': 0})
-                                            df_train.loc[df_train['Level'] == 'hard', 'Class'] = 2
-                                            df_train.loc[df_train['Level'] == 'medium', 'Class'] = 2
-                                            y_tr = df_train['Class'].astype(int)
-                                        else:
-                                            y_tr = df_train['Class'].map({'test': 1, 'music': 0, 'breath': 0, 'natural': 0}).astype(int)
+                                    df = df.dropna(subset=['Class'])
+                                    if signal != 'All':
+                                        selected_columns = self.ex_col + [c for c in df.columns if
+                                                                          c.startswith(signal + '_')]
+                                        df = df[selected_columns]
+                                    df_train = df[df['ID'].isin(train_ids)].copy()
+                                    if df_train.empty:
+                                        continue
 
-                                        groups = df_train['ID']
+                                    feature_cols = [c for c in df.columns if c not in self.ex_col]
 
-                                        if len(df_train) == 0:
-                                            continue
-                                        scaler = StandardScaler()
-                                        X_tr = df_train[feature_cols].copy()
-                                        X_tr = pd.DataFrame(scaler.fit_transform(X_tr), columns=X_tr.columns, index=X_tr.index)
-                                        gkf = GroupKFold(n_splits=3)
-                                        grid = HalvingGridSearchCV(
-                                            estimator=clone(base_model),
-                                            param_grid=param_grids[name],
-                                            cv=gkf,
-                                            scoring="f1_weighted",
-                                            n_jobs=-1,
-                                            factor=2,
-                                            resource="n_samples",
-                                            max_resources="auto",
-                                            aggressive_elimination=False,
-                                            refit=False,
-                                            verbose=3
+                                    # y (שתי/שלוש מחלקות)
+                                    if clases_3:
+                                        df_train['Class'] = df_train['Class'].map(
+                                            {'test': 1, 'music': 0, 'breath': 0, 'natural': 0}
                                         )
+                                        if 'Level' in df_train.columns:
+                                            df_train.loc[df_train['Level'].isin(['hard', 'medium']), 'Class'] = 2
+                                        # להסרת NaN/Inf לפני אימון
+                                        df_train = df_train.replace([np.inf, -np.inf], np.nan).dropna(subset=['Class'])
+                                        y_tr = df_train['Class'].astype(int)
+                                    else:
+                                        df_train = df_train.replace([np.inf, -np.inf], np.nan).dropna(subset=['Class'])
+                                        y_tr = df_train['Class'].map(
+                                            {'test': 1, 'music': 0, 'breath': 0, 'natural': 0}
+                                        )
+                                        df_train = df_train[y_tr.notna()]
+                                        y_tr = y_tr[y_tr.notna()].astype(int)
 
-                                        grid.fit(X_tr, y_tr, groups=groups)
+                                    X_tr = df_train[feature_cols].copy()
+
+                                    if scale_flag:
+                                        scaler = StandardScaler()
+                                        X_tr = pd.DataFrame(scaler.fit_transform(X_tr), columns=X_tr.columns,
+                                                            index=X_tr.index)
+
+                                    gkf = GroupKFold(n_splits=3)
+                                    grid = HalvingGridSearchCV(
+                                        estimator=clone(base_model),
+                                        param_grid=param_grids[name],
+                                        cv=gkf,
+                                        scoring="f1_weighted",
+                                        n_jobs=-1,
+                                        factor=2,
+                                        resource="n_samples",
+                                        max_resources="auto",
+                                        aggressive_elimination=False,
+                                        refit=False,
+                                        verbose=0
+                                    )
+                                    try:
+                                        grid.fit(X_tr, y_tr, groups=df_train['ID'])
                                         mean_f1 = grid.best_score_
-                                        print(
-                                            f"WS={ws}s, OV={int(ov * 100)}%, F1={mean_f1:.3f}, Model={name},Params={grid.best_params_}")
-
-                                        # Update best configuration if this is better
                                         if mean_f1 > best_config['f1']:
                                             best_config.update({
                                                 'window': ws,
@@ -758,133 +1047,136 @@ class AnalysisData():
                                                 'params': grid.best_params_,
                                                 'f1': mean_f1
                                             })
-                                            print(f" → New best for {name}!")
-
                                     except Exception as e:
-                                        print(f"      Error with WS={ws}s, OV={int(ov * 100)}%: {str(e)}")
+                                        print(f"Grid error {name} WS={ws} OV={ov}: {e}")
 
-                            # Store best configuration for this model
                             best_ws[name] = {
                                 'window': best_config['window'],
                                 'overlap': best_config['overlap'],
                                 'f1': best_config['f1']
                             }
                             best_params[name] = best_config['params']
-                            print(fr"{name} best_params no_breath_data {no_breath_data} and clases_3 {clases_3}.to_csv")
-                            hyper_dir = os.path.join(out_dir, 'hyperparameters', signal)
-                            os.makedirs(hyper_dir, exist_ok=True)
 
-                            pd.DataFrame(best_params).to_csv(os.path.join(hyper_dir, 'best_params.csv'))
-                            pd.DataFrame(best_ws).to_csv(os.path.join(hyper_dir, 'best_ws.csv'))
-                            pd.DataFrame([best_config]).to_csv(os.path.join(hyper_dir, 'best_config.csv'))
+                        # שמירה
+                        pd.DataFrame(
+                            [{'model': k, 'window': v['window'], 'overlap': v['overlap'], 'f1': v['f1']} for k, v in
+                             best_ws.items()]
+                        ).to_csv(ws_file, index=False)
+                        pd.DataFrame(
+                            [dict({'model': k}, **v) for k, v in best_params.items()]
+                        ).to_csv(params_file, index=False)
+                        print(f"Saved hyperparameters for {tag} • {signal}.")
 
-                            os.makedirs(out_dir, exist_ok=True)
-                            if best_config['window'] is not None:
-                                print(
-                                    f"    Best config for {name}: WS={best_config['window']}s, OV={int(best_config['overlap'] * 100)}%, F1={best_config['f1']:.3f}")
-                                print(f"    Best params: {best_config['params']}")
-                            else:
-                                print(f"    No valid configuration found for {name}")
+                    # --- הערכה עם best_ws/best_params ---
+                    for name in base_models:
+                        ws = best_ws[name]['window']
+                        ov = best_ws[name]['overlap']
+                        if ws is None or ov is None:
+                            continue
 
+                        df = read_dataset(data_subdir, ws, ov)
+                        if df is None:
+                            continue
+                        df = df.dropna(subset=['Class'])
+                        if signal != 'All':
+                            selected_columns = self.ex_col + [c for c in df.columns if c.startswith(signal + '_')]
+                            df = df[selected_columns]
 
-                        print("  Grid search completed for all models.")
-                # -----------Iteration 3 Evaluation on Test Set------------------------------
-                for name in base_models:
-                    ws = best_ws[name]['window']
-                    ov = best_ws[name]['overlap']
-                    if ws is None or ov is None:
-                        continue
+                        # חלוקה לפי ids
+                        df_train = df[df['ID'].isin(train_ids)].copy()
+                        df_test = df[df['ID'].isin(test_ids)].copy()
+                        feature_cols = [c for c in df.columns if c not in self.ex_col]
 
-                    file_path = fr'{self.path}\Participants\Dataset\Dataset_By_Window\Clean_Data\Dataset_{ws}s_{int(ov * 100)}.csv'
-                    df = pd.read_csv(file_path)
-                    df = df.dropna(subset=['Class'])
-                    if signal != 'All':
-                        selected_columns = self.ex_col + [col for col in df.columns if
-                                                           col.startswith(signal + '_')]
-                        df = df[selected_columns]
-                    df_train = df[df['ID'].isin(train_ids)].copy()
-                    feature_cols = [c for c in df.columns if
-                                    c not in self.ex_col]
+                        # טיפול ב-y + ניקוי NaN/Inf
+                        if clases_3:
+                            for dfx in (df_train, df_test):
+                                dfx['Class'] = dfx['Class'].map({'test': 1, 'music': 0, 'breath': 0, 'natural': 0})
+                                if 'Level' in dfx.columns:
+                                    dfx.loc[dfx['Level'].isin(['hard', 'medium']), 'Class'] = 2
+                                dfx.replace([np.inf, -np.inf], np.nan, inplace=True)
+                            df_train = df_train.dropna(subset=['Class'])
+                            df_test = df_test.dropna(subset=['Class'])
+                            y_tr = df_train['Class'].astype(int)
+                            y_te = df_test['Class'].astype(int)
+                        else:
+                            for dfx in (df_train, df_test):
+                                dfx.replace([np.inf, -np.inf], np.nan, inplace=True)
+                            y_tr = df_train['Class'].map({'test': 1, 'music': 0, 'breath': 0, 'natural': 0})
+                            y_te = df_test['Class'].map({'test': 1, 'music': 0, 'breath': 0, 'natural': 0})
+                            df_train = df_train[y_tr.notna()]
+                            df_test = df_test[y_te.notna()]
+                            y_tr = y_tr[y_tr.notna()].astype(int)
+                            y_te = y_te[y_te.notna()].astype(int)
 
-                    if clases_3:
-                        df_train['Class'] = df_train['Class'].map({'test': 1, 'music': 0, 'breath': 0, 'natural': 0})
-                        df_train.loc[df_train['Level'] == 'hard', 'Class'] = 2
-                        df_train.loc[df_train['Level'] == 'medium', 'Class'] = 2
-                        y =df_train['Class'].astype(int)
-                    else:
-                        y = df_train['Class'].map({'test': 1, 'music': 0, 'breath': 0, 'natural': 0}).astype(int)
-                    model = clone(base_models[name]).set_params(**best_params.get(name, {}))
-                    X_train = df_train[feature_cols]
-                    scaler = StandardScaler()
-                    X_train = scaler.fit_transform(X_train)
-                    model.fit(X_train, y)
-                    params = best_params[name]
+                        # X
+                        X_tr = df_train[feature_cols].copy()
+                        X_te = df_test[feature_cols].copy()
+                        # הסרת NaN ב-X (אם יש) בהתאמה ל-y
+                        X_tr = X_tr.replace([np.inf, -np.inf], np.nan)
+                        X_te = X_te.replace([np.inf, -np.inf], np.nan)
+                        valid_tr = X_tr.notna().all(axis=1)
+                        valid_te = X_te.notna().all(axis=1)
+                        X_tr = X_tr.loc[valid_tr]
+                        y_tr = y_tr.loc[valid_tr]
+                        X_te = X_te.loc[valid_te]
+                        y_te = y_te.loc[valid_te]
 
-                    df_test = df[df['ID'].isin(test_ids)].copy()
-                    X_te = df_test[feature_cols]
-                    X_te = scaler.transform(X_te)
+                        if scale_flag:
+                            scaler = StandardScaler()
+                            X_tr = scaler.fit_transform(X_tr)
+                            X_te = scaler.transform(X_te)
 
-                    if clases_3:
-                        df_test['Class'] = df_test['Class'].map({'test': 1, 'music': 0, 'breath': 0, 'natural': 0})
-                        df_test.loc[df_test['Level'] == 'hard', 'Class'] = 2
-                        df_test.loc[df_test['Level'] == 'medium', 'Class'] = 2
-                        y_te = df_test['Class'].astype(int)
-                    else:
-                        y_te = df_test['Class'].map({'test': 1, 'music': 0, 'breath': 0, 'natural': 0}).astype(int)
+                        model = clone(base_models[name]).set_params(**best_params.get(name, {}))
+                        model.fit(X_tr, y_tr)
+                        y_pred = model.predict(X_te)
 
-                    y_pred = model.predict(X_te)
-                    # ----------------- Model visuals per run -----------------
-                    vis_dir = os.path.join(out_dir, "Model Visuals", signal, name)
-                    os.makedirs(vis_dir, exist_ok=True)
-                    run_tag = f"Run{repeat + 1}_WS{ws}_OV{int(ov * 100)}"
+                        # ויזואליזציות
+                        vis_dir = os.path.join(out_dir, "Model Visuals", signal, name)
+                        os.makedirs(vis_dir, exist_ok=True)
+                        run_tag = f"{tag}_Run{repeat + 1}_WS{ws}_OV{int(ov * 100)}"
 
-                    try:
-                        if name == 'DecisionTree' and hasattr(model, "tree_"):
-                            plt.figure(figsize=(18, 10))
-                            plot_tree(
-                                model,
-                                feature_names=feature_cols,
-                                class_names=[str(c) for c in sorted(np.unique(y))],
-                                filled=True,
-                                impurity=True,
-                                rounded=True,
-                                fontsize=8
-                            )
-                            plt.title(f"Decision Tree - {signal} - {run_tag}")
-                            plt.tight_layout()
-                            tree_path = os.path.join(vis_dir, f"{run_tag}_DecisionTree.png")
-                            plt.savefig(tree_path, dpi=200)
-                            plt.close()
-                            # שמירה טקסטואלית אופציונלית של העץ כבונוס
-                            # from sklearn.tree import export_text
-                            # with open(os.path.join(vis_dir, f"{run_tag}_DecisionTree.txt"), "w", encoding="utf-8") as f:
-                            #     f.write(export_text(model, feature_names=list(feature_cols)))
+                        try:
+                            # DecisionTree plot
+                            if name == 'DecisionTree' and hasattr(model, "tree_"):
+                                plt.figure(figsize=(18, 10))
+                                plot_tree(
+                                    model,
+                                    feature_names=feature_cols,
+                                    class_names=[str(c) for c in sorted(np.unique(y_tr))],
+                                    filled=True,
+                                    impurity=True,
+                                    rounded=True,
+                                    fontsize=8
+                                )
+                                plt.title(f"Decision Tree - {signal} - {run_tag}")
+                                plt.tight_layout()
+                                plt.savefig(os.path.join(vis_dir, f"{run_tag}_DecisionTree.png"), dpi=200)
+                                plt.close()
 
-                        if name == 'LogReg' and hasattr(model, "coef_"):
-                            coefs = model.coef_  # (n_classes or 1, n_features) או (n_features,)
-                            classes_ = getattr(model, "classes_", np.arange(coefs.shape[0] if coefs.ndim > 1 else 1))
-                            coef_df_list = []
+                            # Logistic Regression: משוואה + ברים של מקדמים
+                            if name == 'LogReg' and hasattr(model, "coef_"):
+                                coefs = model.coef_
+                                classes_ = getattr(model, "classes_",
+                                                   np.arange(coefs.shape[0] if coefs.ndim > 1 else 1))
 
-                            # --- Save the logistic regression equation as a text file ---
-                            try:
+                                # קובץ משוואה
                                 eq_path = os.path.join(vis_dir, f"{run_tag}_LogReg_Equation.txt")
                                 with open(eq_path, "w", encoding="utf-8") as f:
-                                    f.write("Logistic Regression equations - features are StandardScaler scaled\n")
-                                    f.write(f"Signal: {signal} | Run: {run_tag}\n")
+                                    f.write(
+                                        "Logistic Regression equations - features are StandardScaler scaled only in X_N\n")
+                                    f.write(f"Variant: {tag} | Signal: {signal} | Run: {run_tag}\n")
                                     f.write(f"Classes: {list(classes_)}\n\n")
 
-                                    # Binary case: single equation
                                     if coefs.ndim == 1 or coefs.shape[0] == 1:
                                         intercept = float(model.intercept_[0]) if hasattr(model, "intercept_") else 0.0
                                         terms = []
                                         for j, feat in enumerate(feature_cols):
-                                            coef_j = coefs[j] if coefs.ndim == 1 else coefs[0, j]  # ← התיקון כאן
+                                            coef_j = coefs[j] if coefs.ndim == 1 else coefs[0, j]
                                             terms.append(f"{float(coef_j):.6f}*{feat}")
                                         f.write("Binary setting\n")
                                         f.write(f"logit = {intercept:.6f} + " + " + ".join(terms) + "\n")
                                         f.write("P(y=positive) = 1 / (1 + exp(-logit))\n")
                                     else:
-                                        # Multiclass OvR: one equation per class
                                         for i, cls in enumerate(np.atleast_1d(classes_)):
                                             intercept = float(model.intercept_[i]) if hasattr(model,
                                                                                               "intercept_") else 0.0
@@ -893,306 +1185,324 @@ class AnalysisData():
                                             f.write(f"Class {cls} - one vs rest\n")
                                             f.write(f"logit_{cls} = {intercept:.6f} + " + " + ".join(terms) + "\n\n")
                                         f.write("P(y=cls) = exp(logit_cls) / sum_k exp(logit_k)\n")
-                                print(f"📝 Saved logistic regression equation to {eq_path}")
-                            except Exception as e:
-                                print(f"⚠️ Could not save logistic regression equation: {e}")
 
-                            # נשמור CSV של המקדמים לכל מחלקה
-                            for i, cls in enumerate(np.atleast_1d(classes_)):
-                                cls_coefs = coefs[i] if coefs.ndim > 1 else coefs
-                                coef_df = pd.DataFrame({
-                                    "Feature": feature_cols,
-                                    "Coefficient": cls_coefs
-                                }).sort_values("Coefficient", ascending=False)
-                                coef_df["AbsCoeff"] = coef_df["Coefficient"].abs()
-                                coef_df_list.append(coef_df.assign(Class=cls))
+                                # טבלאות + גרפים
+                                coef_df_list = []
+                                for i, cls in enumerate(np.atleast_1d(classes_)):
+                                    cls_coefs = coefs[i] if coefs.ndim > 1 else coefs
+                                    coef_df = pd.DataFrame({"Feature": feature_cols, "Coefficient": cls_coefs})
+                                    coef_df["AbsCoeff"] = coef_df["Coefficient"].abs()
 
-                                # גרף בר של המאפיינים הבולטים - ניקח טופ 20 לפי |coef|
-                                top_k = coef_df.sort_values("AbsCoeff", ascending=False).head(20)
-                                plt.figure(figsize=(12, 6))
-                                plt.bar(top_k["Feature"], top_k["Coefficient"])
-                                plt.xticks(rotation=90)
-                                plt.xlabel("Feature")
-                                plt.ylabel("Coefficient")
-                                plt.title(f"Logistic Regression Coefficients - class {cls} - {signal} - {run_tag}")
-                                plt.tight_layout()
-                                coef_plot_path = os.path.join(vis_dir, f"{run_tag}_LogReg_Coeffs_class{cls}.png")
-                                plt.savefig(coef_plot_path, dpi=200)
-                                plt.close()
+                                    # גרף טופ-20
+                                    top_k = coef_df.sort_values("AbsCoeff", ascending=False).head(20)
+                                    plt.figure(figsize=(12, 6))
+                                    plt.bar(top_k["Feature"], top_k["Coefficient"])
+                                    plt.xticks(rotation=90)
+                                    plt.xlabel("Feature")
+                                    plt.ylabel("Coefficient")
+                                    plt.title(f"LogReg Coefficients - class {cls} - {signal} - {run_tag}")
+                                    plt.tight_layout()
+                                    plt.savefig(os.path.join(vis_dir, f"{run_tag}_LogReg_Coeffs_class{cls}.png"),
+                                                dpi=200)
+                                    plt.close()
 
-                            # CSV מאוחד לכל המחלקות
-                            coef_all = pd.concat(coef_df_list, ignore_index=True)
-                            coef_csv_path = os.path.join(vis_dir, f"{run_tag}_LogReg_Coefficients.csv")
-                            coef_all.to_csv(coef_csv_path, index=False)
-                    except Exception as e:
-                        print(f"⚠️ Could not build model visuals for {name} at {run_tag}: {e}")
-                    # ---------------------------------------------------------
+                                    coef_df_list.append(coef_df.assign(Class=cls))
 
-                    result_row = {
-                        'Signal': signal,
-                        'Repeat': repeat + 1,
-                        'Model': name,
-                        'Window (s)': ws,
-                        'Overlap (%)': int(ov * 100),
-                        'Accuracy': accuracy_score(y_te, y_pred) * 100,
-                        'Precision': precision_score(y_te, y_pred, average='macro', zero_division=0) * 100,
-                        'Recall': recall_score(y_te, y_pred, average='macro', zero_division=0) * 100,
-                        'F1': f1_score(y_te, y_pred, average='macro', zero_division=0) * 100
-                    }
-                    result_row.update({f'param_{k}': v for k, v in params.items()})
-                    print(result_row)
-                    results.append(result_row)
+                                # CSV של כל המקדמים
+                                coef_all = pd.concat(coef_df_list, ignore_index=True)
+                                coef_all.to_csv(os.path.join(vis_dir, f"{run_tag}_LogReg_Coefficients.csv"),
+                                                index=False)
 
-                    # Save feature importance plot, CSV, and collect for summary
-                    imp = None
-                    if hasattr(model, 'feature_importances_'):
-                        # Tree-based models
-                        imp_values = model.feature_importances_
-                        imp = pd.Series(imp_values, index=feature_cols).sort_values(ascending=False)
-
-                    elif hasattr(model, 'coef_'):
-                        # Linear SVM (LinearSVC)
-                        try:
-                            imp_values = np.abs(model.coef_).mean(axis=0)
-                            imp = pd.Series(imp_values, index=feature_cols).sort_values(ascending=False)
-                        except:
-                            pass
-
-                    else:
-                        # For non-linear SVM or other models: use permutation importance
-                        try:
-                            result = permutation_importance(model, X_te, y_te, n_repeats=10, random_state=42, n_jobs=-1)
-                            imp_values = result.importances_mean
-                            imp = pd.Series(imp_values, index=feature_cols).sort_values(ascending=False)
                         except Exception as e:
-                            print(f"⚠️ Could not compute permutation importance for {name}: {e}")
+                            print(f"Visuals error for {name} {run_tag}: {e}")
 
-                    if imp is not None:
-                        importances[name].append(imp)
+                        # מדדים
+                        params = best_params.get(name, {})
+                        result_row = {
+                            'Variant': tag,
+                            'Signal': signal,
+                            'Repeat': repeat + 1,
+                            'Model': name,
+                            'Window (s)': ws,
+                            'Overlap (%)': int(ov * 100),
+                            'Accuracy': accuracy_score(y_te, y_pred) * 100,
+                            'Precision': precision_score(y_te, y_pred, average='macro', zero_division=0) * 100,
+                            'Recall': recall_score(y_te, y_pred, average='macro', zero_division=0) * 100,
+                            'F1': f1_score(y_te, y_pred, average='macro', zero_division=0) * 100
+                        }
+                        result_row.update({f'param_{k}': v for k, v in params.items()})
+                        results.append(result_row)
 
-            # Save per-signal results
-            results_df = pd.DataFrame(results).round(2)
-            os.makedirs(out_dir, exist_ok=True)
+                        # --------- חשיבות תכונות ---------
+                        imp = None
+                        if hasattr(model, 'feature_importances_'):
+                            # עצים/יער
+                            try:
+                                imp_values = model.feature_importances_
+                                imp = pd.Series(imp_values, index=feature_cols).sort_values(ascending=False)
+                            except Exception:
+                                imp = None
+                        elif hasattr(model, 'coef_'):
+                            # מודלים ליניאריים
+                            try:
+                                imp_values = np.abs(model.coef_).mean(axis=0)
+                                imp = pd.Series(imp_values, index=feature_cols).sort_values(ascending=False)
+                            except Exception:
+                                imp = None
 
-            output_path = os.path.join(out_dir, "CV_Results", f"NestedCV_Results_{signal}.csv")
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            results_df.to_csv(output_path, index=False)
-            print(f"✅ Saved results for no_breath_data {no_breath_data} and clases_3 {clases_3} {signal} to NestedCV_Results_{signal}.csv")
+                        if imp is None:
+                            # גיבוי: eli5 permutation importance על סט הבדיקה
+                            try:
+                                # שים לב: עבור SVC(kernel='rbf') יש צורך ב-probability=True (כבר הוגדר)
+                                perm = PermutationImportance(
+                                    model, random_state=42, scoring="f1_weighted", n_iter=10
+                                )
+                                # חשוב: eli5 מצפה ל-numpy array; כבר עשינו scaling אם צריך
+                                perm.fit(X_te, y_te)
+                                imp_values = perm.feature_importances_
+                                imp = pd.Series(imp_values, index=feature_cols).sort_values(ascending=False)
+                            except Exception as e:
+                                print(f"eli5 permutation importance failed for {name}: {e}")
+                                imp = None
 
-            # Summary metrics per model
-            summary_metrics = results_df.groupby("Model")[["Accuracy", "Precision", "Recall", "F1"]].agg(
-                ["mean", "std"]).round(2)
-            optimal_settings = results_df.groupby("Model")[["Window (s)", "Overlap (%)"]].first()
-            summary = pd.concat([summary_metrics, optimal_settings], axis=1).reset_index()
-            summary.insert(0, "Signal", signal)
-            # --- reorder columns in NestedCV_{signal}_Summary.csv ---
-            # current columns: 'Model', 'Window (s)', 'Overlap (%)' + MultiIndex metrics
-            front = ["Signal", "Model", "Window (s)", "Overlap (%)"]
-            metrics_order = [
-                ("Accuracy", "mean"), ("Accuracy", "std"),
-                ("Precision", "mean"), ("Precision", "std"),
-                ("Recall", "mean"), ("Recall", "std"),
-                ("F1", "mean"), ("F1", "std"),
-            ]
+                        if imp is not None:
+                            importances[name].append(imp)
 
-            # make sure columns exist (robust to missing ones)
-            existing_metrics = [c for c in metrics_order if c in summary.columns]
-            existing_front = [c for c in front if c in summary.columns]
+                # ---- שמירת תוצאות לכל אות ----
+                results_df = pd.DataFrame(results).round(2)
+                out_cv_res = os.path.join(out_dir, "CV_Results")
+                os.makedirs(out_cv_res, exist_ok=True)
+                results_path = os.path.join(out_cv_res, f"NestedCV_Results_{signal}.csv")
+                results_df.to_csv(results_path, index=False)
 
-            summary = summary[existing_front + existing_metrics]
+                # ---- סיכום לפי מודל (סדר עמודות מבוקש) ----
+                summary_metrics = results_df.groupby("Model")[["Accuracy", "Precision", "Recall", "F1"]].agg(
+                    ["mean", "std"]).round(2)
+                optimal_settings = results_df.groupby("Model")[["Window (s)", "Overlap (%)"]].first()
+                summary = pd.concat([summary_metrics, optimal_settings], axis=1).reset_index()
+                summary.insert(0, "Variant", tag)
+                summary.insert(1, "Signal", signal)
 
-            output_path = os.path.join(out_dir, "CV_Summary", f"NestedCV_{signal}_Summary.csv")
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            summary.to_csv(output_path, index=False)
-            all_summary.append(summary)
+                front = ["Variant", "Signal", "Model", "Window (s)", "Overlap (%)"]
+                metrics_order = [
+                    ("Accuracy", "mean"), ("Accuracy", "std"),
+                    ("Precision", "mean"), ("Precision", "std"),
+                    ("Recall", "mean"), ("Recall", "std"),
+                    ("F1", "mean"), ("F1", "std"),
+                ]
+                existing_metrics = [c for c in metrics_order if c in summary.columns]
+                existing_front = [c for c in front if c in summary.columns]
+                summary = summary[existing_front + existing_metrics]
 
-            all_imps_long = []
-            combined_df = pd.DataFrame()
+                out_cv_sum = os.path.join(out_dir, "CV_Summary")
+                os.makedirs(out_cv_sum, exist_ok=True)
+                summary_path = os.path.join(out_cv_sum, f"NestedCV_{signal}_Summary.csv")
+                summary.to_csv(summary_path, index=False)
+                all_summary.append(summary)
 
-            # Process each model
-            for name, imps in importances.items():
-                if imps:
-                    # Per-model summary
-                    imp_df = pd.concat(imps, axis=1).fillna(0)
-                    imp_df.columns = [f"Repeat_{i + 1}" for i in range(len(imps))]
-                    imp_df["Mean"] = imp_df.mean(axis=1)
-                    imp_df["Std"] = imp_df.std(axis=1)
+                # ---- איחוד חשיבויות תכונות לכל המודלים ----
+                all_imps_long = []
+                combined_df = pd.DataFrame()
+                for name, imps in importances.items():
+                    if imps:
+                        imp_df = pd.concat(imps, axis=1).fillna(0)
+                        imp_df.columns = [f"Repeat_{i + 1}" for i in range(len(imps))]
+                        imp_df["Mean"] = imp_df.mean(axis=1)
+                        imp_df["Std"] = imp_df.std(axis=1)
 
-                    model_data_dir = os.path.join(out_dir, "Feature Importance", signal, name, "data")
-                    os.makedirs(model_data_dir, exist_ok=True)
-                    imp_df.sort_values("Mean", ascending=False).to_csv(
-                        os.path.join(model_data_dir, "Feature_Importance_Summary.csv")
-                    )
-                    # Create and save feature importance plot (all features)
-                    model_plot_dir = os.path.join(out_dir, "Feature Importance", signal, name, "plot")
-                    os.makedirs(model_plot_dir, exist_ok=True)
+                        model_data_dir = os.path.join(out_dir, "Feature Importance", signal, name, "data")
+                        model_plot_dir = os.path.join(out_dir, "Feature Importance", signal, name, "plot")
+                        os.makedirs(model_data_dir, exist_ok=True)
+                        os.makedirs(model_plot_dir, exist_ok=True)
+
+                        imp_df.sort_values("Mean", ascending=False).to_csv(
+                            os.path.join(model_data_dir, "Feature_Importance_Summary.csv")
+                        )
+
+                        plt.figure(figsize=(12, 6))
+                        imp_df["Mean"].sort_values(ascending=False).plot(kind='bar')
+                        plt.title(f"Feature Importances - {name} ({signal}) [{tag}]")
+                        plt.ylabel("Mean Importance")
+                        plt.xlabel("Feature")
+                        plt.tight_layout()
+                        plt.savefig(os.path.join(model_plot_dir, "Feature_Importance_Plot.png"))
+                        plt.close()
+
+                        model_imp_df = pd.concat(imps, axis=1).fillna(0)
+                        model_imp_df.columns = [f"{name}_Repeat_{i + 1}" for i in range(len(imps))]
+                        model_imp_df[f"{name}_Mean"] = model_imp_df.mean(axis=1)
+                        combined_df = pd.concat([combined_df, model_imp_df[[f"{name}_Mean"]]], axis=1)
+
+                        for i, imp in enumerate(imps):
+                            tmp = imp.reset_index()
+                            tmp.columns = ["Feature", "Importance"]
+                            tmp["Model"] = name
+                            tmp["Repeat"] = i + 1
+                            all_imps_long.append(tmp)
+
+                if not combined_df.empty:
+                    combined_df["Combined_Mean"] = combined_df.mean(axis=1)
+                    combined_df = combined_df.sort_values("Combined_Mean", ascending=False)
+                    comb_dir_data = os.path.join(out_dir, "Feature Importance", signal, "All Models", "data")
+                    comb_dir_plot = os.path.join(out_dir, "Feature Importance", signal, "All Models", "plot")
+                    os.makedirs(comb_dir_data, exist_ok=True)
+                    os.makedirs(comb_dir_plot, exist_ok=True)
+                    combined_df.to_csv(os.path.join(comb_dir_data, "Combined_Feature_Importance.csv"))
 
                     plt.figure(figsize=(12, 6))
-                    imp_df["Mean"].sort_values(ascending=False).plot(kind='bar')
-                    plt.title(f"Feature Importances - {name} ({signal})")
+                    combined_df["Combined_Mean"].plot(kind="bar")
+                    title_prefix = "3-Class" if clases_3 else "2-Class"
+                    title_suffix = "No Breath" if no_breath_data else "All Data"
+                    plt.title(f"{title_prefix} - {title_suffix} | {signal} [{tag}] Combined Feature Importances")
                     plt.ylabel("Mean Importance")
                     plt.xlabel("Feature")
                     plt.tight_layout()
-                    plt.savefig(os.path.join(model_plot_dir, "Feature_Importance_Plot.png"))
+                    plt.savefig(os.path.join(comb_dir_plot, "Combined_Feature_Importance_Plot.png"))
                     plt.close()
-                    # Add mean column to combined DataFrame
-                    model_imp_df = pd.concat(imps, axis=1).fillna(0)
-                    model_imp_df.columns = [f"{name}_Repeat_{i + 1}" for i in range(len(imps))]
-                    model_imp_df[f"{name}_Mean"] = model_imp_df.mean(axis=1)
-                    combined_df = pd.concat([combined_df, model_imp_df[[f"{name}_Mean"]]], axis=1)
 
-                    # Long format
-                    for i, imp in enumerate(imps):
-                        temp = imp.reset_index()
-                        temp.columns = ["Feature", "Importance"]
-                        temp["Model"] = name
-                        temp["Repeat"] = i + 1
-                        all_imps_long.append(temp)
+                if all_imps_long:
+                    all_df = pd.concat(all_imps_long, axis=0)
+                    mean_df = all_df.groupby("Feature")["Importance"].mean().sort_values(ascending=False)
+                    mean_df.to_csv(os.path.join(comb_dir_data, "Combined_Feature_Importance_Mean.csv"))
 
-            # Combined summary
-            if not combined_df.empty:
-                combined_df["Combined_Mean"] = combined_df.mean(axis=1)
-                combined_df = combined_df.sort_values("Combined_Mean", ascending=False)
+                    plt.figure(figsize=(14, 6))
+                    sns.boxplot(data=all_df, x="Feature", y="Importance", order=mean_df.index)
+                    plt.xticks(rotation=90)
+                    title_prefix = "3-Class" if clases_3 else "2-Class"
+                    title_suffix = "No Breath" if no_breath_data else "All Data"
+                    plt.title(f"{title_prefix} - {title_suffix} | {signal} [{tag}] Importance Distribution")
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(comb_dir_plot, "Combined_Feature_Importance_BoxPlot.png"))
+                    plt.close()
 
-                comb_dir_data = os.path.join(out_dir, "Feature Importance", signal, "All Models", "data")
-                comb_dir_plot = os.path.join(out_dir, "Feature Importance", signal, "All Models", "plot")
-                os.makedirs(comb_dir_data, exist_ok=True)
-                os.makedirs(comb_dir_plot, exist_ok=True)
+            # ========= סיכום משולב לכל האותות בווריאנט =========
+            if all_summary:
+                combined_summary_df = pd.concat(all_summary, ignore_index=True)
+                combined_summary_df.columns = [
+                    f"{c[0]}_{c[1]}" if isinstance(c, tuple) else c
+                    for c in combined_summary_df.columns
+                ]
 
-                combined_df.to_csv(os.path.join(comb_dir_data, "Combined_Feature_Importance.csv"))
+                front = ["Variant", "Signal", "Model", "Window (s)", "Overlap (%)"]
+                metrics_order = [
+                    "Accuracy_mean", "Accuracy_std",
+                    "Precision_mean", "Precision_std",
+                    "Recall_mean", "Recall_std",
+                    "F1_mean", "F1_std",
+                ]
+                existing_front = [c for c in front if c in combined_summary_df.columns]
+                existing_metrics = [m for m in metrics_order if m in combined_summary_df.columns]
+                cols_order = existing_front + existing_metrics + [
+                    c for c in combined_summary_df.columns if c not in existing_front + existing_metrics
+                ]
+                combined_summary_df = combined_summary_df[cols_order]
 
-                # Bar plot
-                plt.figure(figsize=(12, 6))
-                combined_df["Combined_Mean"].plot(kind="bar")
-                if clases_3 and no_breath_data:
-                    title_prefix = "3-Class, No Breath -"
-                elif clases_3:
-                    title_prefix = "3-Class -"
-                elif no_breath_data:
-                    title_prefix = "No Breath -"
-                else:
-                    title_prefix = ""
+                if "F1_mean" in combined_summary_df.columns:
+                    combined_summary_df = combined_summary_df.sort_values("F1_mean", ascending=False)
 
-                plt.title(fr"{title_prefix} Combined Feature Importances Across All Models ({signal})")
-                plt.ylabel("Mean Importance")
-                plt.xlabel("Feature")
-                plt.tight_layout()
-                plt.savefig(os.path.join(comb_dir_plot, "Combined_Feature_Importance_Plot.png"))
-                plt.close()
+                out_cv_sum = os.path.join(out_dir, "CV_Summary")
+                os.makedirs(out_cv_sum, exist_ok=True)
+                combined_csv = os.path.join(out_cv_sum, "NestedCV_AllSignals_combined_Summary.csv")
+                combined_summary_df.to_csv(combined_csv, index=False)
+                print(f"Saved combined summary across signals [{tag}] to {combined_csv}")
 
-            # Boxplot across all models/repeats
-            if all_imps_long:
-                all_df = pd.concat(all_imps_long, axis=0)
-                mean_df = all_df.groupby("Feature")["Importance"].mean().sort_values(ascending=False)
-                mean_df.to_csv(os.path.join(comb_dir_data, "Combined_Feature_Importance_Mean.csv"))
+                # ========= Confusion Matrix לשורה הטובה ביותר =========
+                try:
+                    needed = {"Signal", "Model", "Window (s)", "Overlap (%)"}
+                    if not combined_summary_df.empty and needed <= set(combined_summary_df.columns):
+                        best_row = combined_summary_df.iloc[0]
+                        best_signal = str(best_row["Signal"])
+                        best_model_name = str(best_row["Model"])
+                        best_ws = int(best_row["Window (s)"])
+                        best_ov = float(best_row["Overlap (%)"])
 
-                plt.figure(figsize=(14, 6))
-                sns.boxplot(
-                    data=all_df,
-                    x="Feature",
-                    y="Importance",
-                    order=mean_df.index
-                )
-                plt.xticks(rotation=90)
-                if clases_3 and no_breath_data:
-                    title_prefix = "3-Class, No Breath -"
-                elif clases_3:
-                    title_prefix = "3-Class -"
-                elif no_breath_data:
-                    title_prefix = "No Breath -"
-                else:
-                    title_prefix = ""
+                        dataset_path = os.path.join(
+                            self.path, "Participants", "Dataset", "Dataset_By_Window",
+                            data_subdir, f"Dataset_{best_ws}s_{int(best_ov)}.csv"
+                        )
+                        if os.path.exists(dataset_path):
+                            df_best = pd.read_csv(dataset_path).dropna(subset=["Class"])
+                            if best_signal != "All":
+                                selected_columns = self.ex_col + [c for c in df_best.columns if
+                                                                  c.startswith(best_signal + "_")]
+                                df_best = df_best[selected_columns]
+                            feature_cols = [c for c in df_best.columns if c not in self.ex_col]
 
-                plt.title(f"{title_prefix} Feature Importance Distribution (All Models & Repeats) ({signal})")
-                plt.tight_layout()
-                plt.savefig(os.path.join(comb_dir_plot, "Combined_Feature_Importance_BoxPlot.png"))
-                plt.close()
+                            if clases_3:
+                                df_best['Class'] = df_best['Class'].map(
+                                    {'test': 1, 'music': 0, 'breath': 0, 'natural': 0})
+                                if 'Level' in df_best.columns:
+                                    df_best.loc[df_best["Level"].isin(["hard", "medium"]), "Class"] = 2
+                                df_best = df_best.replace([np.inf, -np.inf], np.nan).dropna(subset=["Class"])
+                                y_true = df_best["Class"].astype(int)
+                            else:
+                                df_best = df_best.replace([np.inf, -np.inf], np.nan).dropna(subset=["Class"])
+                                y_true = df_best["Class"].map({'test': 1, 'music': 0, 'breath': 0, 'natural': 0})
+                                df_best = df_best[y_true.notna()]
+                                y_true = y_true[y_true.notna()].astype(int)
 
-            # Combine all per-signal summaries
-        if all_summary:
-            combined_summary_df = pd.concat(all_summary, ignore_index=True)
-            output_path = os.path.join(out_dir, "CV_Summary", "NestedCV_AllSignals_combined_Summary.csv")
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            # Flatten MultiIndex columns
-            combined_summary_df.columns = [
-                f"{col[0]}_{col[1]}" if isinstance(col, tuple) else col
-                for col in combined_summary_df.columns
+                            X = df_best[feature_cols]
+                            X = X.replace([np.inf, -np.inf], np.nan).dropna(axis=0, how='any')
+                            y_true = y_true.loc[X.index]
+
+                            if scale_flag:
+                                scaler = StandardScaler()
+                                X = scaler.fit_transform(X)
+
+                            model = clone(base_models[best_model_name]).set_params(
+                                **best_params.get(best_model_name, {}))
+                            model.fit(X, y_true)
+                            y_hat = model.predict(X)
+                            labels = sorted(y_true.unique())
+
+                            ConfusionMatrixDisplay.from_predictions(y_true, y_hat, display_labels=labels, cmap="Blues",
+                                                                    normalize=None)
+                            title_prefix = "3-Class" if clases_3 else "2-Class"
+                            title_suffix = "No Breath" if no_breath_data else "All Data"
+                            plt.title(
+                                f"{title_prefix} - {title_suffix} | {tag} | Best: {best_model_name} ({best_signal}) WS={best_ws}s OV={int(best_ov)}%")
+                            plt.tight_layout()
+                            cm_path = os.path.join(out_cv_sum,
+                                                   f"ConfusionMatrix_{tag}_{best_signal}_{best_model_name}.png")
+                            plt.savefig(cm_path, dpi=200)
+                            plt.close()
+                            print(f"Saved confusion matrix [{tag}] to {cm_path}")
+                        else:
+                            print(f"Dataset not found for confusion matrix: {dataset_path}")
+                except Exception as e:
+                    print(f"Confusion-matrix build failed for variant {tag}: {e}")
+
+                # לשימוש בסיכום מאסטר
+                if not combined_summary_df.empty:
+                    variant_summaries.append(combined_summary_df.iloc[[0]].assign(Variant=tag))
+
+        # ========= Master Summary לכל הווריאנטים =========
+        if variant_summaries:
+            master_df = pd.concat(variant_summaries, ignore_index=True)
+            front = ["Variant", "Signal", "Model", "Window (s)", "Overlap (%)"]
+            metrics_order = [
+                "Accuracy_mean", "Accuracy_std",
+                "Precision_mean", "Precision_std",
+                "Recall_mean", "Recall_std",
+                "F1_mean", "F1_std",
             ]
-            combined_summary_df = combined_summary_df.sort_values(['F1_mean'], ascending=False)
-            combined_summary_df.to_csv(output_path, index=False)
-            print("✅ Saved combined summary of all signals to NestedCV_AllSignals_combined_Summary.csv")
-            # 🎯 Locate the best model by highest F1_mean
-            best_row = combined_summary_df.iloc[0]
-            best_signal = best_row["Signal"]
-            best_model_name = best_row["Model"]
-            best_window = int(best_row["Window (s)"])
-            best_overlap = float(best_row["Overlap (%)"])
+            existing_front = [c for c in front if c in master_df.columns]
+            existing_metrics = [m for m in metrics_order if m in master_df.columns]
+            cols_order = existing_front + existing_metrics + [
+                c for c in master_df.columns if c not in existing_front + existing_metrics
+            ]
+            master_df = master_df[cols_order]
+            if "F1_mean" in master_df.columns:
+                master_df = master_df.sort_values("F1_mean", ascending=False)
 
-            dataset_path = os.path.join(
-                self.path,
-                "Participants",
-                "Dataset",
-                "Dataset_By_Window",
-                "Clean_Data",
-                f"Dataset_{best_window}s_{int(best_overlap)}.csv"
+            master_out_root = os.path.join(self.path, 'Participants', 'Dataset', 'ML', 'Classification')
+            os.makedirs(master_out_root, exist_ok=True)
+            master_csv = os.path.join(
+                master_out_root,
+                f"Master_BestRows_byVariant_{'3class' if clases_3 else '2class'}_{'NoBreath' if no_breath_data else 'AllData'}.csv"
             )
-
-            df_best = pd.read_csv(dataset_path).dropna(subset=["Class"])
-            if best_signal != "All":
-                selected_columns = self.ex_col + [col for col in df_best.columns if col.startswith(best_signal + "_")]
-                df_best = df_best[selected_columns]
-
-            feature_cols = [c for c in df_best.columns if c not in self.ex_col]
-
-            if clases_3:
-                df_best["Class"] = df_best["Class"].map({'test': 1, 'music': 0, 'breath': 0, 'natural': 0})
-                df_best.loc[df_best["Level"] == "hard", "Class"] = 2
-                df_best.loc[df_best['Level'] == 'medium', 'Class'] = 2
-                y_true = df_best["Class"]
-            else:
-                y_true = df_best["Class"].map({'test': 1, 'music': 0, 'breath': 0, 'natural': 0})
-
-            X = df_best[feature_cols]
-
-            # Clone and set parameters
-            best_model = clone(base_models[best_model_name])
-            best_model.set_params(**best_params[best_model_name])
-
-            # Train
-            best_model.fit(X, y_true)
-
-            # Predict
-            y_pred = best_model.predict(X)
-            labels = sorted(y_true.unique())
-
-            cm_display = ConfusionMatrixDisplay.from_predictions(
-                y_true,
-                y_pred,
-                display_labels=labels,
-                cmap="Blues",
-                normalize=None
-            )
-
-            if clases_3 and no_breath_data:
-                title_prefix = "3-Class, No Breath -"
-            elif clases_3:
-                title_prefix = "3-Class -"
-            elif no_breath_data:
-                title_prefix = "No Breath -"
-            else:
-                title_prefix = ""
-
-            plt.title(f"{title_prefix} Confusion Matrix - {best_model_name} ({best_signal})")
-            plt.tight_layout()
-
-            cm_dir = fr'{out_dir}/CV_Summary'
-            os.makedirs(cm_dir, exist_ok=True)
-
-            plot_path = os.path.join(cm_dir, f"ConfusionMatrix_{best_signal}_{best_model_name}.png")
-            plt.savefig(plot_path)
-            plt.close()
-
-            print(f"✅ Saved confusion matrix plot to {plot_path}")
+            master_df.to_csv(master_csv, index=False)
+            print(f"Saved global master summary across variants to {master_csv}")
 
     def Cor(self):
         df = pd.read_csv(fr'{self.path}\Participants\Dataset\Dataset_By_Window\Clean_Data\Dataset_60s_0.csv')
@@ -1251,13 +1561,6 @@ class AnalysisData():
 
         # Print the model summary
         print(result.summary())
-
-    import pandas as pd
-    import numpy as np
-    import os
-    import re
-    from scipy.stats import kruskal
-    import scikit_posthocs as sp
 
     def StatisticalTest(self):
         """

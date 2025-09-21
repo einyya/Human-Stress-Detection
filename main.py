@@ -42,6 +42,7 @@ if __name__ == '__main__':
             hde.CleanData(ID=None,rangeID=True)
             hde.CreateDataset(ID=None,rangeID=True)
             hde.MissingData(ID=None, rangeID=False)
+            hde.Create_Delta()
             hde.CorrelationMatrixAndReduce()
 
         if Combine:
@@ -66,11 +67,11 @@ if __name__ == '__main__':
         ad = AnalysisData(DataPath,ex_col,Prediction_Targets)
         # ad.StatisticalTest()
         # ad.GroupDiffPlot()
-        # ad.ML_models_Prediction()
-        ad.ML_models_Classification(n_repeats=9, no_breath_data=True, clases_3=True)
-        ad.ML_models_Classification(n_repeats=9, no_breath_data=True, clases_3=False)
-        ad.ML_models_Classification(n_repeats=9, no_breath_data=False, clases_3=True)
-        ad.ML_models_Classification(n_repeats=9, no_breath_data=False, clases_3=False)
+        ad.ML_models_Prediction()
+        # ad.ML_models_Classification(n_repeats=9, no_breath_data=True, clases_3=True)
+        # ad.ML_models_Classification(n_repeats=9, no_breath_data=True, clases_3=False)
+        # ad.ML_models_Classification(n_repeats=9, no_breath_data=False, clases_3=True)
+        # ad.ML_models_Classification(n_repeats=9, no_breath_data=False, clases_3=False)
 
 
 

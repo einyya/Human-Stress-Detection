@@ -1922,6 +1922,124 @@ class HumanDataExtraction():
         Dataset_total.to_csv(output_path, index=False)
         print(f"Dataset saved to: {output_path}")
 
+    def Create_Delta(self):
+
+        # --- Folders ---
+        BASE_DIR = os.path.join(self.path, 'Participants', 'Dataset', 'Dataset_By_Window')
+        SRC_DIR = os.path.join(BASE_DIR, 'Clean_Data')  # Raw windowed features
+        OUT_D = os.path.join(BASE_DIR, 'Clean_Data_D')  # Deltas vs previous row
+        OUT_B = os.path.join(BASE_DIR, 'Clean_Data_B')  # Deltas vs first 5 minutes baseline
+
+        os.makedirs(OUT_D, exist_ok=True)
+        os.makedirs(OUT_B, exist_ok=True)
+
+        # --- Helper: determine feature columns ---
+        def get_feature_cols(df: pd.DataFrame):
+            # Exclude meta columns listed in self.ex_col; keep only numeric as features
+            ex = set(getattr(self, 'ex_col', []))
+            num_cols = df.select_dtypes(include=['number']).columns.tolist()
+            return [c for c in num_cols if c not in ex]
+
+        # --- Helper: safe sort within each ID by Time if possible ---
+        def sort_by_time(g: pd.DataFrame):
+            if 'Time' in g.columns and np.issubdtype(g['Time'].dtype, np.number):
+                return g.sort_values('Time', kind='mergesort')
+            else:
+                # Fall back to stable original order within the group
+                g = g.copy()
+                g['_order_'] = np.arange(len(g))
+                g = g.sort_values('_order_', kind='mergesort').drop(columns=['_order_'])
+                return g
+
+        # --- Helper: compute per-ID deltas vs previous row for given feature columns ---
+        def compute_prev_deltas(df: pd.DataFrame, feat_cols):
+            # Group by ID (if missing, treat entire frame as one group)
+            if 'ID' in df.columns:
+                grouped = df.groupby('ID', group_keys=False)
+                parts = []
+                for _, g in grouped:
+                    g_sorted = sort_by_time(g)
+                    deltas = g_sorted[feat_cols].diff()  # first row -> NaN
+                    deltas = deltas.fillna(0.0)  # choose 0 for the first row
+                    g_out = g_sorted.copy()
+                    g_out[feat_cols] = deltas
+                    parts.append(g_out)
+                out = pd.concat(parts, axis=0, ignore_index=True)
+            else:
+                # Single group
+                g_sorted = sort_by_time(df)
+                deltas = g_sorted[feat_cols].diff().fillna(0.0)
+                out = g_sorted.copy()
+                out[feat_cols] = deltas
+            return out
+
+        # --- Helper: compute baseline (first 300s) per ID and subtract ---
+        def compute_baseline_deltas(df: pd.DataFrame, feat_cols, baseline_window_sec=300):
+            def baseline_for_group(g: pd.DataFrame):
+                g_sorted = sort_by_time(g)
+                if 'Time' in g_sorted.columns and np.issubdtype(g_sorted['Time'].dtype, np.number):
+                    t0 = g_sorted['Time'].min()
+                    mask = (g_sorted['Time'] - t0) <= baseline_window_sec
+                    base_block = g_sorted.loc[mask, feat_cols]
+                    if base_block.empty:
+                        # Fallback: first row values
+                        base_vec = g_sorted[feat_cols].iloc[[0]].astype(float)
+                    else:
+                        base_vec = base_block.mean(axis=0, numeric_only=True).to_frame().T
+                else:
+                    # No numeric Time -> use first row as baseline
+                    base_vec = g_sorted[feat_cols].iloc[[0]].astype(float)
+
+                g_out = g_sorted.copy()
+                # Broadcast subtraction: each row - baseline (per feature)
+                g_out[feat_cols] = g_out[feat_cols].astype(float).values - base_vec.values
+                return g_out
+
+            if 'ID' in df.columns:
+                out = df.groupby('ID', group_keys=False).apply(baseline_for_group)
+                # groupby-apply may add index levels, ensure flat index
+                out = out.reset_index(drop=True)
+            else:
+                out = baseline_for_group(df)
+            return out
+
+        # --- Iterate over all CSVs in source directory ---
+        if not os.path.exists(SRC_DIR):
+            print(f"Source directory not found: {SRC_DIR}")
+            return
+
+        files = [f for f in os.listdir(SRC_DIR) if f.lower().endswith('.csv')]
+        if not files:
+            print(f"No CSV files found in {SRC_DIR}")
+            return
+
+        for fname in files:
+            src_path = os.path.join(SRC_DIR, fname)
+            try:
+                df = pd.read_csv(src_path)
+            except Exception as e:
+                print(f"Skipping {fname} (cannot read): {e}")
+                continue
+
+            feat_cols = get_feature_cols(df)
+            if not feat_cols:
+                # No numeric features – copy as-is to both outputs
+                df.to_csv(os.path.join(OUT_D, fname), index=False)
+                df.to_csv(os.path.join(OUT_B, fname), index=False)
+                print(f"{fname}: no numeric feature columns, copied unchanged to outputs.")
+                continue
+
+            # Clean_Data_D: deltas vs previous row
+            df_D = compute_prev_deltas(df, feat_cols)
+            df_D.to_csv(os.path.join(OUT_D, fname), index=False)
+
+            # Clean_Data_B: deltas vs first 5min baseline
+            df_B = compute_baseline_deltas(df, feat_cols, baseline_window_sec=300)
+            df_B.to_csv(os.path.join(OUT_B, fname), index=False)
+
+            print(
+                f"Saved:\n  Deltas vs previous -> {os.path.join(OUT_D, fname)}\n  Deltas vs 5-min base -> {os.path.join(OUT_B, fname)}")
+
     def CreateDataset(self, ID=None, rangeID=False):
         def label_window(t):
             for _, tr in Trigger_df.iterrows():
